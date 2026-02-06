@@ -267,6 +267,27 @@ Preserves natural movement frequencies:
 | FOV Estimation | No | Yes (MoGe2) |
 | Mesh Output | No | Yes (6890 vertices) |
 
+## FBX Export
+
+The FBX export uses a skeleton template (`Import_OS4_Patreon_Aitor_Skely.blend`) with the metarig_skely armature. Joint angles from the .mot file are applied to the skeleton bones, including forearm pronation/supination from the hand markers.
+
+### Bone Mappings
+
+| OpenSim Joint | Blender Bone | Notes |
+|---------------|--------------|-------|
+| pelvis | spine | Location + rotation |
+| hip | thigh.R/L | Hip flexion/adduction/rotation |
+| knee | shin.R/L | Knee angle |
+| ankle | foot.R/L | Ankle angle |
+| lumbar | spine.001 | L5/S1 angles |
+| thorax | spine.002 | Neck/thorax angles |
+| shoulder | upper_arm.R/L | Arm flex/add/rotation |
+| elbow | forearm.R/L | Elbow flex + pronation/supination |
+
+### Forearm Rotation
+
+The hand markers (LIndex3, RIndex3, LMiddleTip, RMiddleTip) constrain the `pro_sup_r/l` angles in OpenSim IK, which are then applied to the forearm bones in Blender for realistic arm rotation.
+
 ## File Formats
 
 ### video_outputs.json

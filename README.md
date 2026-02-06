@@ -23,7 +23,7 @@ Video → SAM3 Detector → SAM3D Body → MHR70 Keypoints → TRC Markers → O
 - **Hand markers for arm rotation**: Better internal/external rotation tracking
 - **Butterworth smoothing**: Configurable low-pass filter to reduce jitter
 - **OpenSim IK** with 40 DOF using Pose2Sim model
-- **FBX export** via Blender for animation software
+- **FBX export** via Blender with rigged skeleton template (includes forearm rotation)
 - **Two-stage workflow**: Separate inference (slow) from export (fast) for rapid iteration
 
 ## Performance

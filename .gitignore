@@ -60,6 +60,10 @@ videos/
 *.pth
 *.bin
 
+# Blender temp files (but keep Import_*.blend skeleton templates)
+*.blend1
+*.blend2
+
 # OS files
 .DS_Store
 Thumbs.db
