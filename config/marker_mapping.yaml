@@ -1,0 +1,316 @@
+# MHR70 to OpenSim Marker Mapping
+# =================================
+# Full 70-keypoint mapping from SAM3D Body MHR70 format to OpenSim markers
+
+# MHR70 keypoint names (indices 0-69)
+mhr70_keypoints:
+  # Body (17 points)
+  0: "nose"
+  1: "left_eye"
+  2: "right_eye"
+  3: "left_ear"
+  4: "right_ear"
+  5: "left_shoulder"
+  6: "right_shoulder"
+  7: "left_elbow"
+  8: "right_elbow"
+  9: "left_hip"
+  10: "right_hip"
+  11: "left_knee"
+  12: "right_knee"
+  13: "left_ankle"
+  14: "right_ankle"
+
+  # Feet (6 points)
+  15: "left_big_toe"
+  16: "left_small_toe"
+  17: "left_heel"
+  18: "right_big_toe"
+  19: "right_small_toe"
+  20: "right_heel"
+
+  # Right hand (21 points)
+  21: "right_thumb_tip"
+  22: "right_thumb_first_joint"
+  23: "right_thumb_second_joint"
+  24: "right_thumb_third_joint"
+  25: "right_index_tip"
+  26: "right_index_first_joint"
+  27: "right_index_second_joint"
+  28: "right_index_third_joint"
+  29: "right_middle_tip"
+  30: "right_middle_first_joint"
+  31: "right_middle_second_joint"
+  32: "right_middle_third_joint"
+  33: "right_ring_tip"
+  34: "right_ring_first_joint"
+  35: "right_ring_second_joint"
+  36: "right_ring_third_joint"
+  37: "right_pinky_tip"
+  38: "right_pinky_first_joint"
+  39: "right_pinky_second_joint"
+  40: "right_pinky_third_joint"
+  41: "right_wrist"
+
+  # Left hand (21 points)
+  42: "left_thumb_tip"
+  43: "left_thumb_first_joint"
+  44: "left_thumb_second_joint"
+  45: "left_thumb_third_joint"
+  46: "left_index_tip"
+  47: "left_index_first_joint"
+  48: "left_index_second_joint"
+  49: "left_index_third_joint"
+  50: "left_middle_tip"
+  51: "left_middle_first_joint"
+  52: "left_middle_second_joint"
+  53: "left_middle_third_joint"
+  54: "left_ring_tip"
+  55: "left_ring_first_joint"
+  56: "left_ring_second_joint"
+  57: "left_ring_third_joint"
+  58: "left_pinky_tip"
+  59: "left_pinky_first_joint"
+  60: "left_pinky_second_joint"
+  61: "left_pinky_third_joint"
+  62: "left_wrist"
+
+  # Extra anatomical (7 points)
+  63: "left_olecranon"
+  64: "right_olecranon"
+  65: "left_cubital_fossa"
+  66: "right_cubital_fossa"
+  67: "left_acromion"
+  68: "right_acromion"
+  69: "neck"
+
+# Mapping to OpenSim marker names
+# Format: mhr70_index: opensim_marker_name
+opensim_markers:
+  # Head and face
+  0: "Nose"
+  1: "LEye"
+  2: "REye"
+  3: "LEar"
+  4: "REar"
+
+  # Torso
+  5: "LShoulder"
+  6: "RShoulder"
+  69: "Neck"
+  67: "LAcromion"
+  68: "RAcromion"
+
+  # Arms
+  7: "LElbow"
+  8: "RElbow"
+  63: "LOlecranon"
+  64: "ROlecranon"
+  65: "LCubitalFossa"
+  66: "RCubitalFossa"
+  62: "LWrist"
+  41: "RWrist"
+
+  # Pelvis and legs
+  9: "LHip"
+  10: "RHip"
+  11: "LKnee"
+  12: "RKnee"
+  13: "LAnkle"
+  14: "RAnkle"
+
+  # Feet
+  15: "LBigToe"
+  16: "LSmallToe"
+  17: "LHeel"
+  18: "RBigToe"
+  19: "RSmallToe"
+  20: "RHeel"
+
+  # Right hand
+  21: "RThumbTip"
+  22: "RThumb1"
+  23: "RThumb2"
+  24: "RThumb3"
+  25: "RIndexTip"
+  26: "RIndex1"
+  27: "RIndex2"
+  28: "RIndex3"
+  29: "RMiddleTip"
+  30: "RMiddle1"
+  31: "RMiddle2"
+  32: "RMiddle3"
+  33: "RRingTip"
+  34: "RRing1"
+  35: "RRing2"
+  36: "RRing3"
+  37: "RPinkyTip"
+  38: "RPinky1"
+  39: "RPinky2"
+  40: "RPinky3"
+
+  # Left hand
+  42: "LThumbTip"
+  43: "LThumb1"
+  44: "LThumb2"
+  45: "LThumb3"
+  46: "LIndexTip"
+  47: "LIndex1"
+  48: "LIndex2"
+  49: "LIndex3"
+  50: "LMiddleTip"
+  51: "LMiddle1"
+  52: "LMiddle2"
+  53: "LMiddle3"
+  54: "LRingTip"
+  55: "LRing1"
+  56: "LRing2"
+  57: "LRing3"
+  58: "LPinkyTip"
+  59: "LPinky1"
+  60: "LPinky2"
+  61: "LPinky3"
+
+# Derived markers (computed from MHR70 keypoints)
+derived_markers:
+  PelvisCenter:
+    type: "midpoint"
+    points: [9, 10]  # left_hip, right_hip
+
+  Thorax:
+    type: "midpoint"
+    points: [67, 68]  # left_acromion, right_acromion
+
+  SpineMid:
+    type: "interpolate"
+    points: [9, 10, 67, 68]  # hips and shoulders
+    ratio: 0.5  # midpoint between pelvis center and thorax
+
+# OpenSim body segment assignments for each marker
+body_segments:
+  # Head
+  Nose: "head"
+  LEye: "head"
+  REye: "head"
+  LEar: "head"
+  REar: "head"
+
+  # Torso
+  Neck: "torso"
+  LAcromion: "torso"
+  RAcromion: "torso"
+  Thorax: "torso"
+  SpineMid: "torso"
+
+  # Left arm
+  LShoulder: "humerus_l"
+  LElbow: "ulna_l"
+  LOlecranon: "ulna_l"
+  LCubitalFossa: "ulna_l"
+  LWrist: "hand_l"
+
+  # Right arm
+  RShoulder: "humerus_r"
+  RElbow: "ulna_r"
+  ROlecranon: "ulna_r"
+  RCubitalFossa: "ulna_r"
+  RWrist: "hand_r"
+
+  # Pelvis
+  LHip: "pelvis"
+  RHip: "pelvis"
+  PelvisCenter: "pelvis"
+
+  # Left leg
+  LKnee: "tibia_l"
+  LAnkle: "talus_l"
+  LBigToe: "toes_l"
+  LSmallToe: "toes_l"
+  LHeel: "calcn_l"
+
+  # Right leg
+  RKnee: "tibia_r"
+  RAnkle: "talus_r"
+  RBigToe: "toes_r"
+  RSmallToe: "toes_r"
+  RHeel: "calcn_r"
+
+  # Left hand fingers
+  LThumbTip: "hand_l"
+  LThumb1: "hand_l"
+  LThumb2: "hand_l"
+  LThumb3: "hand_l"
+  LIndexTip: "hand_l"
+  LIndex1: "hand_l"
+  LIndex2: "hand_l"
+  LIndex3: "hand_l"
+  LMiddleTip: "hand_l"
+  LMiddle1: "hand_l"
+  LMiddle2: "hand_l"
+  LMiddle3: "hand_l"
+  LRingTip: "hand_l"
+  LRing1: "hand_l"
+  LRing2: "hand_l"
+  LRing3: "hand_l"
+  LPinkyTip: "hand_l"
+  LPinky1: "hand_l"
+  LPinky2: "hand_l"
+  LPinky3: "hand_l"
+
+  # Right hand fingers
+  RThumbTip: "hand_r"
+  RThumb1: "hand_r"
+  RThumb2: "hand_r"
+  RThumb3: "hand_r"
+  RIndexTip: "hand_r"
+  RIndex1: "hand_r"
+  RIndex2: "hand_r"
+  RIndex3: "hand_r"
+  RMiddleTip: "hand_r"
+  RMiddle1: "hand_r"
+  RMiddle2: "hand_r"
+  RMiddle3: "hand_r"
+  RRingTip: "hand_r"
+  RRing1: "hand_r"
+  RRing2: "hand_r"
+  RRing3: "hand_r"
+  RPinkyTip: "hand_r"
+  RPinky1: "hand_r"
+  RPinky2: "hand_r"
+  RPinky3: "hand_r"
+
+# IK marker weights (higher = more important for IK tracking)
+# Scale 0-1, default 1.0
+marker_weights:
+  # High weight - reliable anatomical landmarks
+  LHip: 1.0
+  RHip: 1.0
+  LShoulder: 1.0
+  RShoulder: 1.0
+  LKnee: 1.0
+  RKnee: 1.0
+  LAnkle: 1.0
+  RAnkle: 1.0
+
+  # Medium weight - good but may have occlusion
+  LElbow: 0.8
+  RElbow: 0.8
+  LWrist: 0.8
+  RWrist: 0.8
+  Neck: 0.8
+
+  # Lower weight - face features (less stable)
+  Nose: 0.5
+  LEye: 0.3
+  REye: 0.3
+  LEar: 0.3
+  REar: 0.3
+
+  # Lower weight - extremities (may be occluded or noisy)
+  LBigToe: 0.5
+  RBigToe: 0.5
+  LHeel: 0.6
+  RHeel: 0.6
+
+  # Lowest weight - finger tips (very noisy)
+  default_finger_weight: 0.3

@@ -1,0 +1,67 @@
+# SAM3D Body to OpenSim Pipeline Configuration
+# =============================================
+
+input:
+  video_path: null  # Set via CLI or override here
+  fps: 30  # Target FPS for frame extraction
+
+subject:
+  height: 1.75  # Subject height in meters (for scaling)
+  mass: 70  # Subject mass in kg (optional, for dynamics)
+
+sam3d:
+  # SAM3D Body model paths
+  sam3d_root: "C:/Sam3dBody/sam-3d-body"
+  checkpoint: "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/model.ckpt"
+  mhr_path: "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
+
+  # Optional components (set to null to disable)
+  detector_name: "vitdet"
+  detector_path: null  # Uses environment variable or auto-detect
+  segmentor_name: null  # Set to "sam2" to enable segmentation
+  segmentor_path: null
+  fov_name: "moge2"  # Set to "moge2" for monocular FOV estimation (default enabled)
+  fov_path: null
+
+  # Inference settings
+  device: "cuda"  # "cuda" or "cpu"
+  bbox_threshold: 0.8
+  nms_threshold: 0.3
+  use_mask: false
+  inference_type: "full"  # "full", "body", or "hand"
+
+processing:
+  # Temporal smoothing (Butterworth low-pass filter)
+  smooth_filter: true
+  filter_cutoff: 6  # Hz - cutoff frequency for smoothing
+  filter_order: 4
+
+  # Bone normalization
+  normalize_bones: true
+
+  # Correct systematic artifacts
+  correct_forward_lean: true
+  forward_lean_angle: 0  # degrees, auto-detected if 0
+
+opensim:
+  # OpenSim model and marker files
+  model: "models/Model_Simple_MHR70.osim"
+  markers_xml: "models/Markers_MHR70.xml"
+
+  # IK settings
+  ik_accuracy: 1.0e-5
+  ik_max_iterations: 1000
+
+output:
+  directory: null  # Auto-generated as output_YYYYMMDD_HHMMSS_<videoname>
+
+  # Output formats
+  save_trc: true  # Marker trajectories
+  save_mot: true  # Joint angles
+  save_scaled_model: true  # Scaled OpenSim model
+  save_json: true  # Raw keypoint data
+
+  # Optional outputs
+  save_visualization: false
+  save_fbx: false  # Requires Blender
+  save_mesh_obj: false  # Save mesh per frame (large files)

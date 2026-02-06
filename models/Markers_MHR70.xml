@@ -1,0 +1,399 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+MHR70 Marker Set for OpenSim/Pose2Sim
+=====================================
+This file defines the 70 MHR70 markers plus 3 derived markers
+for use with OpenSim inverse kinematics.
+-->
+<MarkerSet>
+    <objects>
+        <!-- HEAD MARKERS (5) -->
+        <Marker name="Nose">
+            <body>head</body>
+            <location>0.08 0.05 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LEye">
+            <body>head</body>
+            <location>0.06 0.07 0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="REye">
+            <body>head</body>
+            <location>0.06 0.07 -0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LEar">
+            <body>head</body>
+            <location>-0.02 0.06 0.07</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="REar">
+            <body>head</body>
+            <location>-0.02 0.06 -0.07</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- TORSO MARKERS (5) -->
+        <Marker name="Neck">
+            <body>torso</body>
+            <location>0 0.45 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LAcromion">
+            <body>torso</body>
+            <location>0 0.40 0.19</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RAcromion">
+            <body>torso</body>
+            <location>0 0.40 -0.19</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LShoulder">
+            <body>humerus_l</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RShoulder">
+            <body>humerus_r</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- LEFT ARM MARKERS (5) -->
+        <Marker name="LElbow">
+            <body>ulna_l</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LOlecranon">
+            <body>ulna_l</body>
+            <location>-0.02 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LCubitalFossa">
+            <body>ulna_l</body>
+            <location>0.02 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LWrist">
+            <body>hand_l</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- RIGHT ARM MARKERS (5) -->
+        <Marker name="RElbow">
+            <body>ulna_r</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="ROlecranon">
+            <body>ulna_r</body>
+            <location>-0.02 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RCubitalFossa">
+            <body>ulna_r</body>
+            <location>0.02 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RWrist">
+            <body>hand_r</body>
+            <location>0 0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- PELVIS MARKERS (2) -->
+        <Marker name="LHip">
+            <body>pelvis</body>
+            <location>0 0 0.09</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RHip">
+            <body>pelvis</body>
+            <location>0 0 -0.09</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- LEFT LEG MARKERS (3) -->
+        <Marker name="LKnee">
+            <body>tibia_l</body>
+            <location>0 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LAnkle">
+            <body>talus_l</body>
+            <location>0 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- RIGHT LEG MARKERS (3) -->
+        <Marker name="RKnee">
+            <body>tibia_r</body>
+            <location>0 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RAnkle">
+            <body>talus_r</body>
+            <location>0 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- LEFT FOOT MARKERS (3) -->
+        <Marker name="LBigToe">
+            <body>toes_l</body>
+            <location>0.04 0 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LSmallToe">
+            <body>toes_l</body>
+            <location>0.03 0 -0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LHeel">
+            <body>calcn_l</body>
+            <location>-0.03 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- RIGHT FOOT MARKERS (3) -->
+        <Marker name="RBigToe">
+            <body>toes_r</body>
+            <location>0.04 0 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RSmallToe">
+            <body>toes_r</body>
+            <location>0.03 0 0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RHeel">
+            <body>calcn_r</body>
+            <location>-0.03 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- LEFT HAND MARKERS (21) -->
+        <Marker name="LThumbTip">
+            <body>hand_l</body>
+            <location>0.04 -0.02 0.04</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LThumb1">
+            <body>hand_l</body>
+            <location>0.03 -0.01 0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LThumb2">
+            <body>hand_l</body>
+            <location>0.02 0 0.025</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LThumb3">
+            <body>hand_l</body>
+            <location>0.01 0.01 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LIndexTip">
+            <body>hand_l</body>
+            <location>0.09 -0.02 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LIndex1">
+            <body>hand_l</body>
+            <location>0.07 -0.01 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LIndex2">
+            <body>hand_l</body>
+            <location>0.055 0 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LIndex3">
+            <body>hand_l</body>
+            <location>0.04 0.01 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LMiddleTip">
+            <body>hand_l</body>
+            <location>0.095 -0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LMiddle1">
+            <body>hand_l</body>
+            <location>0.075 -0.01 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LMiddle2">
+            <body>hand_l</body>
+            <location>0.06 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LMiddle3">
+            <body>hand_l</body>
+            <location>0.045 0.01 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LRingTip">
+            <body>hand_l</body>
+            <location>0.085 -0.02 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LRing1">
+            <body>hand_l</body>
+            <location>0.068 -0.01 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LRing2">
+            <body>hand_l</body>
+            <location>0.053 0 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LRing3">
+            <body>hand_l</body>
+            <location>0.04 0.01 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LPinkyTip">
+            <body>hand_l</body>
+            <location>0.07 -0.02 -0.04</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LPinky1">
+            <body>hand_l</body>
+            <location>0.057 -0.01 -0.035</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LPinky2">
+            <body>hand_l</body>
+            <location>0.045 0 -0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="LPinky3">
+            <body>hand_l</body>
+            <location>0.035 0.01 -0.025</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- RIGHT HAND MARKERS (21) -->
+        <Marker name="RThumbTip">
+            <body>hand_r</body>
+            <location>0.04 -0.02 -0.04</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RThumb1">
+            <body>hand_r</body>
+            <location>0.03 -0.01 -0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RThumb2">
+            <body>hand_r</body>
+            <location>0.02 0 -0.025</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RThumb3">
+            <body>hand_r</body>
+            <location>0.01 0.01 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RIndexTip">
+            <body>hand_r</body>
+            <location>0.09 -0.02 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RIndex1">
+            <body>hand_r</body>
+            <location>0.07 -0.01 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RIndex2">
+            <body>hand_r</body>
+            <location>0.055 0 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RIndex3">
+            <body>hand_r</body>
+            <location>0.04 0.01 -0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RMiddleTip">
+            <body>hand_r</body>
+            <location>0.095 -0.02 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RMiddle1">
+            <body>hand_r</body>
+            <location>0.075 -0.01 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RMiddle2">
+            <body>hand_r</body>
+            <location>0.06 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RMiddle3">
+            <body>hand_r</body>
+            <location>0.045 0.01 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RRingTip">
+            <body>hand_r</body>
+            <location>0.085 -0.02 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RRing1">
+            <body>hand_r</body>
+            <location>0.068 -0.01 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RRing2">
+            <body>hand_r</body>
+            <location>0.053 0 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RRing3">
+            <body>hand_r</body>
+            <location>0.04 0.01 0.02</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RPinkyTip">
+            <body>hand_r</body>
+            <location>0.07 -0.02 0.04</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RPinky1">
+            <body>hand_r</body>
+            <location>0.057 -0.01 0.035</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RPinky2">
+            <body>hand_r</body>
+            <location>0.045 0 0.03</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="RPinky3">
+            <body>hand_r</body>
+            <location>0.035 0.01 0.025</location>
+            <fixed>false</fixed>
+        </Marker>
+
+        <!-- DERIVED MARKERS (3) -->
+        <Marker name="PelvisCenter">
+            <body>pelvis</body>
+            <location>0 0 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="Thorax">
+            <body>torso</body>
+            <location>0 0.35 0</location>
+            <fixed>false</fixed>
+        </Marker>
+        <Marker name="SpineMid">
+            <body>torso</body>
+            <location>0 0.17 0</location>
+            <fixed>false</fixed>
+        </Marker>
+    </objects>
+</MarkerSet>

@@ -1,0 +1,32 @@
+# SAM3D Body to OpenSim Pipeline - Requirements
+# ==============================================
+
+# Core dependencies
+numpy>=1.24.0
+scipy>=1.10.0
+opencv-python>=4.8.0
+torch>=2.0.0
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# OpenSim / Pose2Sim
+# Note: pose2sim may require specific installation
+# See: https://github.com/perfanalytics/pose2sim
+pose2sim>=0.10.0
+
+# OpenSim Python bindings
+# Install via conda: conda install -c opensim-org opensim
+# pyopensim  # Uncomment if installed via pip
+
+# Optional: Mesh handling
+trimesh>=3.21.0
+
+# Optional: Visualization
+matplotlib>=3.7.0
+
+# SAM3D Body dependencies (already installed in C:\Sam3dBody)
+# These are typically installed with SAM3D Body:
+# - timm
+# - einops
+# - pyrender
+# - pytorch3d (optional, for mesh rendering)
