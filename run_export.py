@@ -198,10 +198,10 @@ def run_export(
     else:
         print("\n[5/5] Skipping OpenSim IK")
 
-    # Export FBX
-    if not skip_fbx and not skip_ik:
+    # Export FBX (uses .mot file for joint angles including forearm rotation)
+    if not skip_fbx and not skip_ik and mot_path:
         print("\nExporting FBX...")
-        fbx_path = run_fbx_export(trc_path, output_dir)
+        fbx_path = run_fbx_export(mot_path, output_dir)
         results["fbx"] = fbx_path
 
     # Summary
@@ -350,30 +350,46 @@ except Exception as e:
     return mot_files[0] if mot_files else None
 
 
-def run_fbx_export(trc_path: Path, output_dir: Path):
-    """Export FBX using Blender."""
+def run_fbx_export(mot_path: Path, output_dir: Path):
+    """Export FBX using Blender with skeleton template.
+
+    Uses the metarig_skely skeleton from Import_OS4_Patreon_Aitor_Skely.blend
+    and applies joint angles from the .mot file (including forearm pronation/supination).
+    """
     import subprocess
 
     BLENDER_PATH = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
-    blender_script = PROJECT_ROOT / "scripts" / "export_fbx_blender.py"
+    blend_template = PROJECT_ROOT / "Import_OS4_Patreon_Aitor_Skely.blend"
+    blender_script = PROJECT_ROOT / "scripts" / "export_fbx_skely.py"
 
-    trc_path = Path(trc_path).resolve()
-    fbx_path = output_dir / f"{trc_path.stem}.fbx"
+    mot_path = Path(mot_path).resolve()
+    fbx_path = output_dir / f"{mot_path.stem.replace('_ik', '')}.fbx"
 
     if not Path(BLENDER_PATH).exists():
         print(f"  Blender not found: {BLENDER_PATH}")
         return None
 
+    if not blend_template.exists():
+        print(f"  Skeleton template not found: {blend_template}")
+        return None
+
     cmd = [
-        BLENDER_PATH, "--background", "--python", str(blender_script),
-        "--", "--trc", str(trc_path), "--output", str(fbx_path)
+        BLENDER_PATH, "--background", str(blend_template),
+        "--python", str(blender_script),
+        "--", "--mot", str(mot_path), "--output", str(fbx_path)
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode == 0:
         print(f"  FBX: {fbx_path}")
         return fbx_path
-    return None
+    else:
+        if result.stderr:
+            for line in result.stderr.split('\n'):
+                if line and 'Error' in line:
+                    print(f"  {line}")
+        return None
 
 
 def main():

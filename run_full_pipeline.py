@@ -325,7 +325,11 @@ print("IK completed successfully!")
 
 
 def run_fbx_export(output_dir):
-    """Export to FBX using Blender."""
+    """Export to FBX using Blender with skeleton template.
+
+    Uses the metarig_skely skeleton from Import_OS4_Patreon_Aitor_Skely.blend
+    and applies joint angles from the .mot file (including forearm pronation/supination).
+    """
     print("\n" + "=" * 60)
     print("Stage 3: FBX Export (Blender)")
     print("=" * 60)
@@ -333,31 +337,37 @@ def run_fbx_export(output_dir):
     # Convert to absolute path
     output_dir = Path(output_dir).resolve()
 
-    # Find TRC file
-    trc_files = list(output_dir.glob("*.trc"))
-    if not trc_files:
-        raise FileNotFoundError(f"No TRC file found in {output_dir}")
-    trc_path = trc_files[0].resolve()
+    # Find MOT file (joint angles from IK)
+    mot_files = list(output_dir.glob("*_ik.mot"))
+    if not mot_files:
+        raise FileNotFoundError(f"No MOT file found in {output_dir}")
+    mot_path = mot_files[0].resolve()
 
     # Output FBX path
-    fbx_path = output_dir / f"{trc_path.stem}.fbx"
+    fbx_path = output_dir / f"{mot_path.stem.replace('_ik', '')}.fbx"
 
-    # Blender script path
-    blender_script = PROJECT_ROOT / "scripts" / "export_fbx_blender.py"
+    # Skeleton template and script
+    blend_template = PROJECT_ROOT / "Import_OS4_Patreon_Aitor_Skely.blend"
+    blender_script = PROJECT_ROOT / "scripts" / "export_fbx_skely.py"
 
     if not Path(BLENDER_PATH).exists():
         print(f"Blender not found at: {BLENDER_PATH}")
         return None
 
-    print(f"TRC file: {trc_path}")
+    if not blend_template.exists():
+        print(f"Skeleton template not found: {blend_template}")
+        return None
+
+    print(f"MOT file: {mot_path}")
+    print(f"Skeleton template: {blend_template.name}")
     print(f"Output FBX: {fbx_path}")
 
     cmd = [
         BLENDER_PATH,
-        "--background",
+        "--background", str(blend_template),
         "--python", str(blender_script),
         "--",
-        "--trc", str(trc_path),
+        "--mot", str(mot_path),
         "--output", str(fbx_path)
     ]
 
@@ -369,7 +379,10 @@ def run_fbx_export(output_dir):
         return fbx_path
     else:
         print(f"Blender output: {result.stdout}")
-        print(f"Blender errors: {result.stderr}")
+        if result.stderr:
+            for line in result.stderr.split('\n'):
+                if line and 'Error' in line:
+                    print(f"  {line}")
         return None
 
 
