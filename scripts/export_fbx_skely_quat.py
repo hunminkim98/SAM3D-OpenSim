@@ -1,32 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Export OpenSim .mot file to FBX using the metarig_skely skeleton.
+Export OpenSim .mot file to FBX using QUATERNIONS to avoid gimbal lock.
 
-Uses the expert-verified rotation mappings for the Endorfina metarig skeleton,
-which has arms-down rest pose and standard bone naming (spine, thigh.R, etc.).
-
-The skeleton template is loaded from Import_OS4_Patreon_Aitor_Skely.blend.
-
-Rotation mappings (all in Euler XYZ, values converted to radians):
-- spine (pelvis):     (-pelvis_tilt, pelvis_rotation, pelvis_list)
-- spine location:     (-pelvis_tz, pelvis_ty, pelvis_tx)
-- thigh.R:            (-hip_flexion_r, -hip_rotation_r, -hip_adduction_r)
-- shin.R:             (+knee_angle_r, 0, 0)
-- foot.R:             (-ankle_angle_r, 0, 0)
-- thigh.L:            (-hip_flexion_l, +hip_rotation_l, +hip_adduction_l)
-- shin.L:             (+knee_angle_l, 0, 0)
-- foot.L:             (-ankle_angle_l, 0, 0)
-- spine.001 (lumbar):  (-lumbar_extension, lumbar_rotation, lumbar_bending)
-- spine.002 (thorax):  (-thorax_extension, thorax_rotation, thorax_bending)
-- upper_arm.R:         (-arm_flex_r, -arm_rot_r, -arm_add_r)
-- forearm.R:           (-elbow_flex_r, -pro_sup_r, 0)  # Added forearm pronation/supination
-- upper_arm.L:         (-arm_flex_l, +arm_rot_l, +arm_add_l)
-- forearm.L:           (-elbow_flex_l, +pro_sup_l, 0)  # Added forearm pronation/supination
-
-Usage:
-    blender --background Import_OS4_Patreon_Aitor_Skely.blend --python export_fbx_skely.py -- \\
-        --mot motion.mot --output motion.fbx [--fps 30]
+Uses the metarig_skely skeleton template, converting Euler angles to quaternions
+for smooth rotation interpolation without gimbal lock issues.
 """
 
 import os
@@ -41,7 +19,7 @@ else:
     argv = []
 
 import argparse
-parser = argparse.ArgumentParser(description='Export OpenSim .mot to FBX')
+parser = argparse.ArgumentParser(description='Export OpenSim .mot to FBX (Quaternion version)')
 parser.add_argument('--mot', required=True, help='Path to .mot motion file')
 parser.add_argument('--output', '-o', required=True, help='Output FBX file path')
 parser.add_argument('--fps', type=int, default=30, help='Target FPS (default: 30)')
@@ -49,6 +27,7 @@ parser.add_argument('--rig', default='metarig_skely', help='Armature name (defau
 args = parser.parse_args(argv)
 
 import bpy
+from mathutils import Euler, Quaternion
 import numpy as np
 
 
@@ -65,22 +44,30 @@ def unwrap_angle(angles):
 
 
 def preprocess_mot_data(headers, data):
-    """
-    Minimal preprocessing - only unwrap rotation to avoid ±180° discontinuities.
-    The MOT data from OpenSim IK is already correct, we just need to handle
-    the angle wrapping for smooth animation.
-    """
+    """Preprocess motion data - unwrap angles and center translation at origin."""
     data = np.array(data)
 
-    # Get column indices for rotation angles that might wrap
+    # Unwrap pelvis rotation
     rot_idx = headers.index('pelvis_rotation') if 'pelvis_rotation' in headers else None
-
     if rot_idx is not None:
-        # Only unwrap to avoid discontinuities - don't normalize or smooth
         rotations = data[:, rot_idx].copy()
         unwrapped = unwrap_angle(rotations)
         data[:, rot_idx] = unwrapped
-        print(f"  Pelvis rotation: unwrapped (range: {unwrapped.min():.1f}° to {unwrapped.max():.1f}°)")
+        print(f"  Pelvis rotation: unwrapped (range: {unwrapped.min():.1f} to {unwrapped.max():.1f})")
+
+    # Make translation relative to first frame (center at origin)
+    tx_idx = headers.index('pelvis_tx') if 'pelvis_tx' in headers else None
+    tz_idx = headers.index('pelvis_tz') if 'pelvis_tz' in headers else None
+
+    if tx_idx is not None:
+        tx_init = data[0, tx_idx]
+        data[:, tx_idx] = data[:, tx_idx] - tx_init
+        print(f"  pelvis_tx: centered (was {tx_init:.3f}m, now starts at 0)")
+
+    if tz_idx is not None:
+        tz_init = data[0, tz_idx]
+        data[:, tz_idx] = data[:, tz_idx] - tz_init
+        print(f"  pelvis_tz: centered (was {tz_init:.3f}m, now starts at 0)")
 
     return data.tolist()
 
@@ -125,18 +112,39 @@ def get_val(row, headers, col_name, default=0.0):
     return default
 
 
+def euler_to_quat(x, y, z, order='YZX'):
+    """Convert Euler angles (radians) to quaternion using specified order."""
+    euler = Euler((x, y, z), order)
+    return euler.to_quaternion()
+
+
+def set_bone_rotation_quat(bone, x, y, z, euler_order='YZX'):
+    """Set bone rotation using quaternion (avoids gimbal lock)."""
+    quat = euler_to_quat(x, y, z, euler_order)
+    bone.rotation_quaternion = quat
+
+
 def apply_motion(rig_name, mot_path, target_fps=30):
-    """Apply .mot motion data to the skeleton using expert-verified mappings."""
+    """Apply .mot motion data to the skeleton using quaternions."""
     headers, data, in_degrees = read_mot_file(mot_path)
     print(f"Loaded {mot_path}: {len(data)} frames, {len(headers)} columns, degrees={in_degrees}")
 
-    # Preprocess to fix rotation discontinuities
+    # Preprocess
     print("Preprocessing motion data...")
     data = preprocess_mot_data(headers, data)
 
     rig = bpy.data.objects[rig_name]
     bpy.context.view_layer.objects.active = rig
     bpy.ops.object.mode_set(mode='POSE')
+
+    # Set all bones to QUATERNION rotation mode
+    bone_names = ['spine', 'spine.001', 'spine.002',
+                  'thigh.R', 'thigh.L', 'shin.R', 'shin.L', 'foot.R', 'foot.L',
+                  'upper_arm.R', 'upper_arm.L', 'forearm.R', 'forearm.L']
+    for bone_name in bone_names:
+        if bone_name in rig.pose.bones:
+            rig.pose.bones[bone_name].rotation_mode = 'QUATERNION'
+    print("  Set all bones to QUATERNION rotation mode")
 
     # Calculate frame skip for FPS conversion
     if len(data) > 1:
@@ -172,7 +180,6 @@ def apply_motion(rig_name, mot_path, target_fps=30):
         knee_angle_l = get_val(row, headers, 'knee_angle_l', 0)
         ankle_angle_l = get_val(row, headers, 'ankle_angle_l', 0)
 
-        # Lumbar - support both naming conventions
         lumbar_ext = get_val(row, headers, 'lumbar_extension',
                     get_val(row, headers, 'L5_S1_Flex_Ext', 0))
         lumbar_bend = get_val(row, headers, 'lumbar_bending',
@@ -180,7 +187,6 @@ def apply_motion(rig_name, mot_path, target_fps=30):
         lumbar_rot = get_val(row, headers, 'lumbar_rotation',
                     get_val(row, headers, 'L5_S1_axial_rotation', 0))
 
-        # Thorax - support both naming conventions
         thorax_ext = get_val(row, headers, 'thorax_extension',
                     get_val(row, headers, 'neck_flexion', 0))
         thorax_bend = get_val(row, headers, 'thorax_bending',
@@ -192,13 +198,13 @@ def apply_motion(rig_name, mot_path, target_fps=30):
         arm_add_r = get_val(row, headers, 'arm_add_r', 0)
         arm_rot_r = get_val(row, headers, 'arm_rot_r', 0)
         elbow_flex_r = get_val(row, headers, 'elbow_flex_r', 0)
-        pro_sup_r = get_val(row, headers, 'pro_sup_r', 0)  # Forearm pronation/supination
+        pro_sup_r = get_val(row, headers, 'pro_sup_r', 0)
 
         arm_flex_l = get_val(row, headers, 'arm_flex_l', 0)
         arm_add_l = get_val(row, headers, 'arm_add_l', 0)
         arm_rot_l = get_val(row, headers, 'arm_rot_l', 0)
         elbow_flex_l = get_val(row, headers, 'elbow_flex_l', 0)
-        pro_sup_l = get_val(row, headers, 'pro_sup_l', 0)  # Forearm pronation/supination
+        pro_sup_l = get_val(row, headers, 'pro_sup_l', 0)
 
         # Convert to radians if in degrees
         if in_degrees:
@@ -232,65 +238,65 @@ def apply_motion(rig_name, mot_path, target_fps=30):
             elbow_flex_l = radians(elbow_flex_l)
             pro_sup_l = radians(pro_sup_l)
 
-        # === PELVIS (spine bone) ===
+        # === PELVIS (spine bone) - Using QUATERNION ===
         rig.pose.bones['spine'].location.x = -pelvis_tz
         rig.pose.bones['spine'].location.y = pelvis_ty
         rig.pose.bones['spine'].location.z = pelvis_tx
         rig.pose.bones['spine'].keyframe_insert(data_path="location", frame=frame)
 
-        rig.pose.bones['spine'].rotation_euler = np.array([
-            -pelvis_tilt, pelvis_rotation, pelvis_list])
-        rig.pose.bones['spine'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['spine'],
+                               -pelvis_tilt, pelvis_rotation, pelvis_list, 'YZX')
+        rig.pose.bones['spine'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === RIGHT LEG ===
-        rig.pose.bones['thigh.R'].rotation_euler = np.array([
-            -hip_flexion_r, -hip_rotation_r, -hip_adduction_r])
-        rig.pose.bones['thigh.R'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['thigh.R'],
+                               -hip_flexion_r, -hip_rotation_r, -hip_adduction_r, 'YZX')
+        rig.pose.bones['thigh.R'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        rig.pose.bones['shin.R'].rotation_euler = np.array([knee_angle_r, 0, 0])
-        rig.pose.bones['shin.R'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['shin.R'], knee_angle_r, 0, 0, 'YZX')
+        rig.pose.bones['shin.R'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        rig.pose.bones['foot.R'].rotation_euler = np.array([-ankle_angle_r, 0, 0])
-        rig.pose.bones['foot.R'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['foot.R'], -ankle_angle_r, 0, 0, 'YZX')
+        rig.pose.bones['foot.R'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === LEFT LEG ===
-        rig.pose.bones['thigh.L'].rotation_euler = np.array([
-            -hip_flexion_l, hip_rotation_l, hip_adduction_l])
-        rig.pose.bones['thigh.L'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['thigh.L'],
+                               -hip_flexion_l, hip_rotation_l, hip_adduction_l, 'YZX')
+        rig.pose.bones['thigh.L'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        rig.pose.bones['shin.L'].rotation_euler = np.array([knee_angle_l, 0, 0])
-        rig.pose.bones['shin.L'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['shin.L'], knee_angle_l, 0, 0, 'YZX')
+        rig.pose.bones['shin.L'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        rig.pose.bones['foot.L'].rotation_euler = np.array([-ankle_angle_l, 0, 0])
-        rig.pose.bones['foot.L'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['foot.L'], -ankle_angle_l, 0, 0, 'YZX')
+        rig.pose.bones['foot.L'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === LUMBAR (spine.001) ===
-        rig.pose.bones['spine.001'].rotation_euler = np.array([
-            -lumbar_ext, lumbar_rot, lumbar_bend])
-        rig.pose.bones['spine.001'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['spine.001'],
+                               -lumbar_ext, lumbar_rot, lumbar_bend, 'YZX')
+        rig.pose.bones['spine.001'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === THORAX (spine.002) ===
-        rig.pose.bones['spine.002'].rotation_euler = np.array([
-            -thorax_ext, thorax_rot, thorax_bend])
-        rig.pose.bones['spine.002'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['spine.002'],
+                               -thorax_ext, thorax_rot, thorax_bend, 'YZX')
+        rig.pose.bones['spine.002'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === RIGHT ARM ===
-        rig.pose.bones['upper_arm.R'].rotation_euler = np.array([
-            -arm_flex_r, -arm_rot_r, -arm_add_r])
-        rig.pose.bones['upper_arm.R'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['upper_arm.R'],
+                               -arm_flex_r, -arm_rot_r, -arm_add_r, 'YZX')
+        rig.pose.bones['upper_arm.R'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        # Forearm with pronation/supination from hand markers
-        rig.pose.bones['forearm.R'].rotation_euler = np.array([-elbow_flex_r, -pro_sup_r, 0])
-        rig.pose.bones['forearm.R'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['forearm.R'],
+                               -elbow_flex_r, -pro_sup_r, 0, 'YZX')
+        rig.pose.bones['forearm.R'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         # === LEFT ARM ===
-        rig.pose.bones['upper_arm.L'].rotation_euler = np.array([
-            -arm_flex_l, arm_rot_l, arm_add_l])
-        rig.pose.bones['upper_arm.L'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['upper_arm.L'],
+                               -arm_flex_l, arm_rot_l, arm_add_l, 'YZX')
+        rig.pose.bones['upper_arm.L'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
-        # Forearm with pronation/supination from hand markers
-        rig.pose.bones['forearm.L'].rotation_euler = np.array([-elbow_flex_l, pro_sup_l, 0])
-        rig.pose.bones['forearm.L'].keyframe_insert(data_path="rotation_euler", frame=frame)
+        set_bone_rotation_quat(rig.pose.bones['forearm.L'],
+                               -elbow_flex_l, pro_sup_l, 0, 'YZX')
+        rig.pose.bones['forearm.L'].keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
         frame += 1
         if frame % 200 == 0:
@@ -303,7 +309,7 @@ def apply_motion(rig_name, mot_path, target_fps=30):
     bpy.context.scene.frame_end = frame - 1
     bpy.context.scene.render.fps = target_fps
 
-    print(f"  Applied {frame} frames")
+    print(f"  Applied {frame} frames using QUATERNION rotations")
     return frame
 
 
@@ -313,12 +319,10 @@ def cleanup_scene(rig_name):
     rig = bpy.data.objects.get(rig_name)
     if rig:
         keep_names.add(rig.name)
-        # Keep all mesh children of the rig
         for obj in bpy.data.objects:
             if obj.parent == rig and obj.type == 'MESH':
                 keep_names.add(obj.name)
 
-    # Remove everything else
     to_remove = []
     for obj in bpy.data.objects:
         if obj.name not in keep_names:
@@ -334,23 +338,19 @@ def export_fbx(output_path):
     """Export the scene to FBX."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    # Select armature and its meshes
     bpy.ops.object.select_all(action='DESELECT')
     for obj in bpy.data.objects:
         if obj.type in ['ARMATURE', 'MESH']:
             obj.select_set(True)
 
-    # Log frame range for debugging
     frame_start = bpy.context.scene.frame_start
     frame_end = bpy.context.scene.frame_end
     print(f"  Scene frame range: {frame_start} - {frame_end} ({frame_end - frame_start + 1} frames)")
 
-    # Also check the Action frame range
     for obj in bpy.data.objects:
         if obj.type == 'ARMATURE' and obj.animation_data and obj.animation_data.action:
             action = obj.animation_data.action
             print(f"  Action '{action.name}' range: {action.frame_range[0]:.0f} - {action.frame_range[1]:.0f}")
-            # Force the action's manual frame range to match
             action.use_frame_range = True
             action.frame_start = frame_start
             action.frame_end = frame_end
@@ -376,20 +376,15 @@ def main():
     print(f"Motion file: {args.mot}")
     print(f"Output: {args.output}")
     print(f"Rig: {args.rig}")
+    print("Using QUATERNION rotations to avoid gimbal lock")
 
-    # Verify the rig exists
     if args.rig not in bpy.data.objects:
         print(f"ERROR: Armature '{args.rig}' not found!")
         print(f"Available armatures: {[o.name for o in bpy.data.objects if o.type == 'ARMATURE']}")
         return
 
-    # Clean up the scene (remove non-skeleton objects)
     cleanup_scene(args.rig)
-
-    # Apply motion
     apply_motion(args.rig, args.mot, target_fps=args.fps)
-
-    # Export FBX
     export_fbx(args.output)
 
     print("Done!")
