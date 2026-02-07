@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Export OpenSim .mot file to FBX using QUATERNIONS to avoid gimbal lock.
+Export OpenSim .mot file to FBX and GLB.
 
-Uses the metarig_skely skeleton template, converting Euler angles to quaternions
-for smooth rotation interpolation without gimbal lock issues.
+Exports both:
+- FBX: works perfectly in Blender
+- GLB (binary glTF): works in all external viewers (Three.js, Unity, Unreal, web)
+
+GLB uses quaternions natively, completely avoiding the Euler angle wrapping
+issue that causes 180-degree snaps in external FBX viewers.
 """
 
 import os
@@ -19,15 +23,15 @@ else:
     argv = []
 
 import argparse
-parser = argparse.ArgumentParser(description='Export OpenSim .mot to FBX (Quaternion version)')
+parser = argparse.ArgumentParser(description='Export OpenSim .mot to FBX + GLB')
 parser.add_argument('--mot', required=True, help='Path to .mot motion file')
-parser.add_argument('--output', '-o', required=True, help='Output FBX file path')
+parser.add_argument('--output', '-o', required=True, help='Output file path (writes both .fbx and .glb)')
 parser.add_argument('--fps', type=int, default=30, help='Target FPS (default: 30)')
 parser.add_argument('--rig', default='metarig_skely', help='Armature name (default: metarig_skely)')
 args = parser.parse_args(argv)
 
 import bpy
-from mathutils import Euler, Quaternion
+from mathutils import Euler, Quaternion, Vector
 import numpy as np
 
 
@@ -47,7 +51,6 @@ def preprocess_mot_data(headers, data):
     """Preprocess motion data - unwrap angles and center translation at origin."""
     data = np.array(data)
 
-    # Unwrap pelvis rotation
     rot_idx = headers.index('pelvis_rotation') if 'pelvis_rotation' in headers else None
     if rot_idx is not None:
         rotations = data[:, rot_idx].copy()
@@ -55,18 +58,17 @@ def preprocess_mot_data(headers, data):
         data[:, rot_idx] = unwrapped
         print(f"  Pelvis rotation: unwrapped (range: {unwrapped.min():.1f} to {unwrapped.max():.1f})")
 
-    # Make translation relative to first frame (center at origin)
     tx_idx = headers.index('pelvis_tx') if 'pelvis_tx' in headers else None
     tz_idx = headers.index('pelvis_tz') if 'pelvis_tz' in headers else None
 
     if tx_idx is not None:
         tx_init = data[0, tx_idx]
-        data[:, tx_idx] = data[:, tx_idx] - tx_init
+        data[:, tx_idx] -= tx_init
         print(f"  pelvis_tx: centered (was {tx_init:.3f}m, now starts at 0)")
 
     if tz_idx is not None:
         tz_init = data[0, tz_idx]
-        data[:, tz_idx] = data[:, tz_idx] - tz_init
+        data[:, tz_idx] -= tz_init
         print(f"  pelvis_tz: centered (was {tz_init:.3f}m, now starts at 0)")
 
     return data.tolist()
@@ -112,15 +114,23 @@ def get_val(row, headers, col_name, default=0.0):
     return default
 
 
-def euler_to_quat(x, y, z, order='YZX'):
-    """Convert Euler angles (radians) to quaternion using specified order."""
-    euler = Euler((x, y, z), order)
-    return euler.to_quaternion()
+# Track previous quaternion per bone to ensure sign continuity
+_prev_quats = {}
 
 
 def set_bone_rotation_quat(bone, x, y, z, euler_order='YZX'):
-    """Set bone rotation using quaternion (avoids gimbal lock)."""
-    quat = euler_to_quat(x, y, z, euler_order)
+    """Set bone rotation using quaternion with sign continuity."""
+    euler = Euler((x, y, z), euler_order)
+    quat = euler.to_quaternion()
+
+    bone_name = bone.name
+    if bone_name in _prev_quats:
+        prev = _prev_quats[bone_name]
+        dot = quat.w * prev.w + quat.x * prev.x + quat.y * prev.y + quat.z * prev.z
+        if dot < 0:
+            quat = Quaternion((-quat.w, -quat.x, -quat.y, -quat.z))
+
+    _prev_quats[bone_name] = quat.copy()
     bone.rotation_quaternion = quat
 
 
@@ -129,24 +139,28 @@ def apply_motion(rig_name, mot_path, target_fps=30):
     headers, data, in_degrees = read_mot_file(mot_path)
     print(f"Loaded {mot_path}: {len(data)} frames, {len(headers)} columns, degrees={in_degrees}")
 
-    # Preprocess
     print("Preprocessing motion data...")
     data = preprocess_mot_data(headers, data)
 
     rig = bpy.data.objects[rig_name]
     bpy.context.view_layer.objects.active = rig
+
+    # Remove ALL actions from the blend file - old actions have fcurves
+    # targeting "DEF-spine" etc. which confuses the glTF exporter
+    for action in list(bpy.data.actions):
+        bpy.data.actions.remove(action)
+    if rig.animation_data:
+        rig.animation_data_clear()
+    print(f"  Cleared all {len(bpy.data.actions)} remaining actions")
+
     bpy.ops.object.mode_set(mode='POSE')
 
-    # Set all bones to QUATERNION rotation mode
-    bone_names = ['spine', 'spine.001', 'spine.002',
-                  'thigh.R', 'thigh.L', 'shin.R', 'shin.L', 'foot.R', 'foot.L',
-                  'upper_arm.R', 'upper_arm.L', 'forearm.R', 'forearm.L']
-    for bone_name in bone_names:
-        if bone_name in rig.pose.bones:
-            rig.pose.bones[bone_name].rotation_mode = 'QUATERNION'
-    print("  Set all bones to QUATERNION rotation mode")
+    # Set ALL bones to QUATERNION mode (not just animated ones)
+    # This prevents "Multiple rotation mode" warnings in glTF export
+    for bone in rig.pose.bones:
+        bone.rotation_mode = 'QUATERNION'
+    print(f"  Set all {len(rig.pose.bones)} bones to QUATERNION rotation mode")
 
-    # Calculate frame skip for FPS conversion
     if len(data) > 1:
         t_ini = data[0][0]
         t_end = data[-1][0]
@@ -160,7 +174,6 @@ def apply_motion(rig_name, mot_path, target_fps=30):
     for i in range(0, len(data), fps_skip):
         row = data[i]
 
-        # Read all DOFs
         pelvis_tx = get_val(row, headers, 'pelvis_tx', 0)
         pelvis_ty = get_val(row, headers, 'pelvis_ty', 0)
         pelvis_tz = get_val(row, headers, 'pelvis_tz', 0)
@@ -206,7 +219,6 @@ def apply_motion(rig_name, mot_path, target_fps=30):
         elbow_flex_l = get_val(row, headers, 'elbow_flex_l', 0)
         pro_sup_l = get_val(row, headers, 'pro_sup_l', 0)
 
-        # Convert to radians if in degrees
         if in_degrees:
             pelvis_tilt = radians(pelvis_tilt)
             pelvis_list = radians(pelvis_list)
@@ -238,7 +250,7 @@ def apply_motion(rig_name, mot_path, target_fps=30):
             elbow_flex_l = radians(elbow_flex_l)
             pro_sup_l = radians(pro_sup_l)
 
-        # === PELVIS (spine bone) - Using QUATERNION ===
+        # === PELVIS (spine bone) ===
         rig.pose.bones['spine'].location.x = -pelvis_tz
         rig.pose.bones['spine'].location.y = pelvis_ty
         rig.pose.bones['spine'].location.z = pelvis_tx
@@ -304,7 +316,6 @@ def apply_motion(rig_name, mot_path, target_fps=30):
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Set scene frame range
     bpy.context.scene.frame_start = 0
     bpy.context.scene.frame_end = frame - 1
     bpy.context.scene.render.fps = target_fps
@@ -334,8 +345,65 @@ def cleanup_scene(rig_name):
     print(f"Scene cleaned: kept {len(keep_names)} objects")
 
 
+def setup_camera():
+    """Add a static camera framing the character."""
+    cam_data = bpy.data.cameras.new('ExportCamera')
+    cam_obj = bpy.data.objects.new('ExportCamera', cam_data)
+    bpy.context.collection.objects.link(cam_obj)
+
+    cam_obj.location = Vector((0.5, 1.0, 3.0))
+    direction = Vector((0.0, 1.0, 0.0)) - cam_obj.location
+    rot_quat = direction.to_track_quat('-Z', 'Y')
+    cam_obj.rotation_euler = rot_quat.to_euler()
+
+    cam_data.lens = 50
+    cam_data.clip_start = 0.1
+    cam_data.clip_end = 100.0
+
+    bpy.context.scene.camera = cam_obj
+    print(f"Camera added at {tuple(cam_obj.location)}")
+
+
+def bake_to_deform_bones(rig_name, frame_start, frame_end):
+    """Bake visual transforms from control bones to DEF-bones for glTF export.
+
+    The rigify rig has control bones (spine, thigh.R, etc.) that we keyframe,
+    and deform bones (DEF-spine, DEF-thigh.R, etc.) that drive the mesh via
+    Copy Transform constraints. The glTF exporter only exports deform bones,
+    so we need to bake the evaluated constraint results onto them.
+    """
+    rig = bpy.data.objects[rig_name]
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='POSE')
+
+    # Set all DEF-bones to QUATERNION mode and select them
+    bpy.ops.pose.select_all(action='DESELECT')
+    def_count = 0
+    for bone in rig.pose.bones:
+        if bone.name.startswith('DEF-'):
+            bone.rotation_mode = 'QUATERNION'
+            bone.bone.select = True
+            def_count += 1
+
+    print(f"  Baking visual transforms to {def_count} DEF-bones (frames {frame_start}-{frame_end})...")
+
+    # Bake with visual keying - evaluates constraints at each frame
+    bpy.ops.nla.bake(
+        frame_start=frame_start,
+        frame_end=frame_end,
+        step=1,
+        only_selected=True,
+        visual_keying=True,
+        clear_constraints=True,
+        bake_types={'POSE'},
+    )
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    print(f"  Baked and cleared constraints on DEF-bones")
+
+
 def export_fbx(output_path):
-    """Export the scene to FBX."""
+    """Export scene to FBX (for Blender use)."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     bpy.ops.object.select_all(action='DESELECT')
@@ -345,12 +413,10 @@ def export_fbx(output_path):
 
     frame_start = bpy.context.scene.frame_start
     frame_end = bpy.context.scene.frame_end
-    print(f"  Scene frame range: {frame_start} - {frame_end} ({frame_end - frame_start + 1} frames)")
 
     for obj in bpy.data.objects:
         if obj.type == 'ARMATURE' and obj.animation_data and obj.animation_data.action:
             action = obj.animation_data.action
-            print(f"  Action '{action.name}' range: {action.frame_range[0]:.0f} - {action.frame_range[1]:.0f}")
             action.use_frame_range = True
             action.frame_start = frame_start
             action.frame_end = frame_end
@@ -368,15 +434,39 @@ def export_fbx(output_path):
         bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0,
     )
+    print(f"  FBX exported: {output_path}")
 
-    print(f"Exported FBX: {output_path}")
+
+def export_glb(output_path):
+    """Export scene to GLB (binary glTF) for universal viewer compatibility.
+
+    glTF uses quaternions natively - no Euler angle wrapping issues.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for obj in bpy.data.objects:
+        if obj.type in ['ARMATURE', 'MESH', 'CAMERA']:
+            obj.select_set(True)
+
+    bpy.ops.export_scene.gltf(
+        filepath=output_path,
+        export_format='GLB',
+        use_selection=True,
+        export_animations=True,
+        export_animation_mode='ACTIONS',
+        export_bake_animation=True,
+        export_anim_single_armature=True,
+        export_cameras=True,
+        export_apply=False,
+    )
+    print(f"  GLB exported: {output_path}")
 
 
 def main():
     print(f"Motion file: {args.mot}")
     print(f"Output: {args.output}")
     print(f"Rig: {args.rig}")
-    print("Using QUATERNION rotations to avoid gimbal lock")
 
     if args.rig not in bpy.data.objects:
         print(f"ERROR: Armature '{args.rig}' not found!")
@@ -384,10 +474,19 @@ def main():
         return
 
     cleanup_scene(args.rig)
+    setup_camera()
     apply_motion(args.rig, args.mot, target_fps=args.fps)
+
+    # Export FBX (for Blender) - uses control bones directly
+    print(f"\nExporting FBX...")
     export_fbx(args.output)
 
-    print("Done!")
+    # Export GLB (for external viewers - quaternion native, no Euler issues)
+    glb_path = os.path.splitext(args.output)[0] + '.glb'
+    print(f"\nExporting GLB...")
+    export_glb(glb_path)
+
+    print("\nDone!")
 
 
 if __name__ == '__main__':
