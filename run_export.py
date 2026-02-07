@@ -254,7 +254,9 @@ stem = trc_path.stem
 mot_path = output_dir / f"{{stem}}_ik.mot"
 
 MARKER_WEIGHTS = [
-    ("Nose", 0.8), ("LEye", 0.4), ("REye", 0.4), ("LEar", 0.6), ("REar", 0.6),
+    # Head/face - moderate weight to balance spine orientation
+    ("Nose", 0.35), ("LEar", 0.3), ("REar", 0.3),
+    # Torso - high weight for stable spine orientation
     ("Neck", 1.0), ("LShoulder", 1.0), ("RShoulder", 1.0),
     ("LElbow", 1.0), ("RElbow", 1.0), ("LWrist", 1.0), ("RWrist", 1.0),
     # Hand markers for forearm rotation
@@ -266,9 +268,7 @@ MARKER_WEIGHTS = [
 ]
 
 COCO17_MARKERS = [
-    ("Nose", "head", 0.116266, 0.0126096, 0.0),
-    ("LEye", "head", 0.08, 0.025, -0.032),
-    ("REye", "head", 0.08, 0.025, 0.032),
+    ("Nose", "head", 0.10, 0.013, 0.0),
     ("LEar", "head", -0.02, 0.015, -0.075),
     ("REar", "head", -0.02, 0.015, 0.075),
     ("Neck", "torso", -0.0127516, 0.366307, -0.000509),

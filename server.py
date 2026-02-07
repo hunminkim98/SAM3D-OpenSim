@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent
 
 # Paths
 VIDEO_DIR = PROJECT_ROOT / "videos"
-OUTPUT_DIR = PROJECT_ROOT / "output_20260206_152750_aitor_garden_walk"
+OUTPUT_DIR = PROJECT_ROOT / "output_20260207_120705_motion_2_one_minute"
 
 
 class ViewerHandler(http.server.SimpleHTTPRequestHandler):
@@ -40,9 +40,13 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
 
         # API: get video path
         if self.path == "/api/video-path":
-            mp4_files = list(VIDEO_DIR.glob("*.mp4"))
-            if mp4_files:
-                rel = mp4_files[0].relative_to(PROJECT_ROOT).as_posix()
+            # Try to find video matching the output dir name
+            video_file = VIDEO_DIR / "motion_2_one_minute.mp4"
+            if not video_file.exists():
+                mp4_files = list(VIDEO_DIR.glob("*.mp4"))
+                video_file = mp4_files[0] if mp4_files else None
+            if video_file and video_file.exists():
+                rel = video_file.relative_to(PROJECT_ROOT).as_posix()
                 self.send_json({"path": "/" + rel})
             else:
                 self.send_json({"path": None})
