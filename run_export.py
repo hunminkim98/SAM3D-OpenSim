@@ -28,6 +28,12 @@ from pathlib import Path
 
 import numpy as np
 
+from utils.windows_paths import (
+    require_conda_env_python,
+    require_pose2sim_setup,
+    resolve_blender_executable,
+)
+
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -223,8 +229,14 @@ def run_opensim_ik(trc_path: Path, output_dir: Path, height: float, mass: float)
     """Run OpenSim IK using Pose2Sim environment."""
     import subprocess
 
-    OPENSIM_PYTHON = r"C:\ProgramData\anaconda3\envs\Pose2Sim\python.exe"
-    pose2sim_setup = Path(r"C:\ProgramData\anaconda3\envs\Pose2Sim\Lib\site-packages\pose2sim\OpenSim_Setup")
+    opensim_python = require_conda_env_python(
+        "Pose2Sim",
+        override_vars=("SAM3D_OPENSIM_OPENSIM_PYTHON", "OPENSIM_PYTHON"),
+    )
+    pose2sim_setup = require_pose2sim_setup(
+        opensim_python=opensim_python,
+        override_vars=("SAM3D_OPENSIM_POSE2SIM_SETUP", "POSE2SIM_SETUP"),
+    )
 
     trc_path = Path(trc_path).resolve()
     output_dir = Path(output_dir).resolve()
@@ -331,7 +343,7 @@ except Exception as e:
         f.write(ik_script)
 
     result = subprocess.run(
-        [OPENSIM_PYTHON, str(ik_script_path)],
+        [str(opensim_python), str(ik_script_path)],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True
@@ -358,15 +370,17 @@ def run_fbx_export(mot_path: Path, output_dir: Path):
     """
     import subprocess
 
-    BLENDER_PATH = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
     blend_template = PROJECT_ROOT / "Import_OS4_Patreon_Aitor_Skely.blend"
     blender_script = PROJECT_ROOT / "scripts" / "export_fbx_skely.py"
+    blender_path = resolve_blender_executable(
+        override_vars=("SAM3D_OPENSIM_BLENDER_PATH", "BLENDER_PATH"),
+    )
 
     mot_path = Path(mot_path).resolve()
     fbx_path = output_dir / f"{mot_path.stem.replace('_ik', '')}.fbx"
 
-    if not Path(BLENDER_PATH).exists():
-        print(f"  Blender not found: {BLENDER_PATH}")
+    if not blender_path:
+        print("  Blender not found. Set BLENDER_PATH or install Blender under Program Files.")
         return None
 
     if not blend_template.exists():
@@ -374,7 +388,7 @@ def run_fbx_export(mot_path: Path, output_dir: Path):
         return None
 
     cmd = [
-        BLENDER_PATH, "--background", str(blend_template),
+        str(blender_path), "--background", str(blend_template),
         "--python", str(blender_script),
         "--", "--mot", str(mot_path), "--output", str(fbx_path)
     ]

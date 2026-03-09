@@ -20,18 +20,16 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
-import cv2
 import numpy as np
-from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.video_utils import extract_frames, get_video_info
 from utils.io_utils import load_config, get_output_dir
+from utils.cli_utils import str_to_bool
 
 
 def parse_args():
@@ -51,6 +49,14 @@ def parse_args():
                         help="FOV estimator: moge2 or none (default: moge2)")
     parser.add_argument("--use-mask", action="store_true",
                         help="Use segmentation mask (requires segmentor)")
+    parser.add_argument(
+        "--single_person",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Prompt once to choose a single tracked person (default: true)",
+    )
 
     return parser.parse_args()
 
@@ -65,6 +71,7 @@ def run_inference(
     segmentor: str = None,
     fov: str = "moge2",
     use_mask: bool = False,
+    single_person: bool = True,
 ):
     """Run SAM3D Body inference and save to JSON."""
     start_time = time.time()
@@ -91,6 +98,7 @@ def run_inference(
     print(f"Segmentor: {segmentor_name or 'none'}")
     print(f"FOV estimator: {fov_name or 'none'}")
     print(f"Use mask: {use_mask}")
+    print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")
     print(f"{'='*60}\n")
 
     # Step 1: Extract frames
@@ -113,31 +121,34 @@ def run_inference(
         mhr_path=config["sam3d"]["mhr_path"],
         device=device,
         detector_name=detector_name,
+        detector_path=config["sam3d"].get("detector_path"),
         segmentor_name=segmentor_name,
+        segmentor_path=config["sam3d"].get("segmentor_path"),
         fov_name=fov_name,
+        fov_path=config["sam3d"].get("fov_path"),
         bbox_threshold=config["sam3d"]["bbox_threshold"],
         use_mask=use_mask,
         inference_type=config["sam3d"]["inference_type"],
+        single_person=single_person,
     )
+
+    inference_results = sam3d.process_video(frame_paths, progress=True)
 
     # Process frames and collect outputs in SAM3D format
     all_outputs = []
-
-    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Processing")):
-        image = cv2.imread(frame_path)
-        if image is None:
-            continue
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        outputs = sam3d.process_frame(image, frame_idx=idx)
-
+    for frame_data in inference_results["frames"]:
+        frame_path = frame_data["frame_path"]
         frame_name = Path(frame_path).name
-        frame_data = {
-            "frame": frame_name,
-            "outputs": []
-        }
+        frame_entry = {"frame": frame_name, "outputs": []}
 
-        for out in outputs:
+        outputs_to_save = []
+        if single_person:
+            if frame_data["output"] is not None:
+                outputs_to_save = [frame_data["output"]]
+        else:
+            outputs_to_save = frame_data.get("outputs", [])
+
+        for out in outputs_to_save:
             person_data = {
                 "bbox": out.get("bbox", [0, 0, video_info['width'], video_info['height']]),
                 "focal_length": float(out.get("focal_length", 1000.0)),
@@ -150,9 +161,9 @@ def run_inference(
             if "shape_params" in out:
                 person_data["shape_params"] = np.array(out["shape_params"]).tolist()
 
-            frame_data["outputs"].append(person_data)
+            frame_entry["outputs"].append(person_data)
 
-        all_outputs.append(frame_data)
+        all_outputs.append(frame_entry)
 
     # Save to JSON (SAM3D format)
     json_path = output_dir / "video_outputs.json"
@@ -168,6 +179,8 @@ def run_inference(
             "num_frames": len(frame_paths),
             "video_info": video_info,
             "inference_time": time.time() - start_time,
+            "single_person": single_person,
+            "selection": inference_results.get("selection", {}),
         }, f, indent=2)
 
     elapsed = time.time() - start_time
@@ -205,6 +218,7 @@ def main():
         segmentor=args.segmentor,
         fov=args.fov,
         use_mask=args.use_mask,
+        single_person=args.single_person,
     )
 
 

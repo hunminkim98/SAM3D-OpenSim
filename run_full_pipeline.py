@@ -15,14 +15,17 @@ Usage:
 import argparse
 import subprocess
 import sys
-import os
 from pathlib import Path
 from datetime import datetime
 
+from utils.windows_paths import (
+    require_conda_env_python,
+    require_pose2sim_setup,
+    resolve_blender_executable,
+)
+from utils.cli_utils import str_to_bool
+
 # Configuration
-SAM3D_PYTHON = r"C:\ProgramData\anaconda3\envs\sam_3d_body\python.exe"
-OPENSIM_PYTHON = r"C:\ProgramData\anaconda3\envs\Pose2Sim\python.exe"
-BLENDER_PATH = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
 PROJECT_ROOT = Path(__file__).parent
 
 
@@ -49,20 +52,33 @@ def parse_args():
                         help="Use segmentation mask (requires segmentor)")
     parser.add_argument("--smooth", type=float, default=6.0,
                         help="Smoothing cutoff frequency in Hz (0 to disable, default: 6.0)")
+    parser.add_argument(
+        "--single_person",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Prompt once to choose a single tracked person (default: true)",
+    )
 
     return parser.parse_args()
 
 
 def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=False,
                         detector="vitdet", segmentor=None, fov="moge2", use_mask=False,
-                        smooth_cutoff=6.0):
+                        smooth_cutoff=6.0, single_person=True):
     """Run SAM3D Body inference stage."""
     print("\n" + "=" * 60)
     print("Stage 1: SAM3D Body Inference")
     print("=" * 60)
 
+    sam3d_python = require_conda_env_python(
+        "sam_3d_body",
+        override_vars=("SAM3D_OPENSIM_SAM3D_PYTHON", "SAM3D_PYTHON"),
+    )
+
     cmd = [
-        SAM3D_PYTHON,
+        str(sam3d_python),
         str(PROJECT_ROOT / "run_pipeline.py"),
         "--input", str(input_path),
         "--height", str(height),
@@ -72,6 +88,7 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
         "--detector", detector,
         "--fov", fov,
         "--smooth", str(smooth_cutoff),
+        "--single_person", str(bool(single_person)).lower(),
     ]
 
     if segmentor:
@@ -84,6 +101,8 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
         cmd.append("--global-translation")
 
     print(f"  Detector: {detector}, FOV: {fov}, Segmentor: {segmentor or 'none'}")
+    print(f"  Single-person selection: {'ENABLED' if single_person else 'disabled'}")
+    print(f"  Python: {sam3d_python}")
     if global_translation:
         print("  Global translation: ENABLED")
 
@@ -102,6 +121,15 @@ def run_opensim_ik(output_dir, height, mass):
     print("Stage 2: OpenSim Inverse Kinematics")
     print("=" * 60)
 
+    opensim_python = require_conda_env_python(
+        "Pose2Sim",
+        override_vars=("SAM3D_OPENSIM_OPENSIM_PYTHON", "OPENSIM_PYTHON"),
+    )
+    pose2sim_setup = require_pose2sim_setup(
+        opensim_python=opensim_python,
+        override_vars=("SAM3D_OPENSIM_POSE2SIM_SETUP", "POSE2SIM_SETUP"),
+    )
+
     # Convert to absolute path
     output_dir = Path(output_dir).resolve()
 
@@ -111,9 +139,6 @@ def run_opensim_ik(output_dir, height, mass):
         raise FileNotFoundError(f"No TRC file found in {output_dir}")
     trc_path = trc_files[0].resolve()
     print(f"TRC file: {trc_path}")
-
-    # Pose2Sim setup directory
-    pose2sim_setup = Path(r"C:\ProgramData\anaconda3\envs\Pose2Sim\Lib\site-packages\pose2sim\OpenSim_Setup")
 
     # Create IK runner script following MotionBERT-OpenSim approach
     ik_script = """
@@ -300,7 +325,7 @@ print("IK completed successfully!")
 
     print(f"Running IK with OpenSim Python...")
     result = subprocess.run(
-        [OPENSIM_PYTHON, str(ik_script_path)],
+        [str(opensim_python), str(ik_script_path)],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True
@@ -349,9 +374,12 @@ def run_fbx_export(output_dir):
     # Skeleton template and script
     blend_template = PROJECT_ROOT / "Import_OS4_Patreon_Aitor_Skely.blend"
     blender_script = PROJECT_ROOT / "scripts" / "export_fbx_skely.py"
+    blender_path = resolve_blender_executable(
+        override_vars=("SAM3D_OPENSIM_BLENDER_PATH", "BLENDER_PATH"),
+    )
 
-    if not Path(BLENDER_PATH).exists():
-        print(f"Blender not found at: {BLENDER_PATH}")
+    if not blender_path:
+        print("Blender not found. Set BLENDER_PATH or install Blender under Program Files.")
         return None
 
     if not blend_template.exists():
@@ -361,9 +389,10 @@ def run_fbx_export(output_dir):
     print(f"MOT file: {mot_path}")
     print(f"Skeleton template: {blend_template.name}")
     print(f"Output FBX: {fbx_path}")
+    print(f"Blender: {blender_path}")
 
     cmd = [
-        BLENDER_PATH,
+        str(blender_path),
         "--background", str(blend_template),
         "--python", str(blender_script),
         "--",
@@ -396,6 +425,7 @@ def main():
     print(f"Subject: height={args.height}m, mass={args.mass}kg")
     print(f"FPS: {args.fps}")
     print(f"SAM3D: detector={args.detector}, fov={args.fov}, segmentor={args.segmentor or 'none'}")
+    print(f"Single-person selection: {'ENABLED' if args.single_person else 'disabled'}")
     print(f"Global translation: {'ENABLED' if args.global_translation else 'disabled'}")
 
     # Validate input
@@ -431,6 +461,7 @@ def main():
                 fov=args.fov,
                 use_mask=args.use_mask,
                 smooth_cutoff=args.smooth,
+                single_person=args.single_person,
             )
             trc_files = list(output_dir.glob("*.trc"))
             if trc_files:

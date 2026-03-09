@@ -17,11 +17,11 @@ sam3d:
 
   # Optional components (set to null to disable)
   detector_name: "vitdet"
-  detector_path: null  # Uses environment variable or auto-detect
+  detector_path: null  # For SAM3, null auto-detects C:/Sam3dBody/sam3 (repo root)
   segmentor_name: null  # Set to "sam2" to enable segmentation
   segmentor_path: null
   fov_name: "moge2"  # Set to "moge2" for monocular FOV estimation (default enabled)
-  fov_path: null
+  fov_path: null  # null uses the default MoGe2 pretrained model
 
   # Inference settings
   device: "cuda"  # "cuda" or "cpu"

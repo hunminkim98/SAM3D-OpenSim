@@ -34,6 +34,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.video_utils import extract_frames, get_video_info
 from utils.io_utils import load_config, load_marker_mapping, save_json, get_output_dir
+from utils.cli_utils import str_to_bool
 
 
 def parse_args():
@@ -120,6 +121,14 @@ def parse_args():
                         help="Use segmentation mask (requires segmentor)")
     parser.add_argument("--smooth", type=float, default=6.0,
                         help="Smoothing cutoff frequency in Hz (0 to disable, default: 6.0)")
+    parser.add_argument(
+        "--single_person",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="Prompt once to choose a single tracked person (default: true)",
+    )
 
     return parser.parse_args()
 
@@ -141,6 +150,7 @@ def run_pipeline(
     fov: str = "moge2",
     use_mask: bool = False,
     smooth_cutoff: float = 6.0,
+    single_person: bool = True,
 ) -> dict:
     """
     Run the full SAM3D Body to OpenSim pipeline.
@@ -161,6 +171,7 @@ def run_pipeline(
         segmentor: Segmentor ('sam2' or None)
         fov: FOV estimator ('moge2' or 'none')
         use_mask: Whether to use segmentation masks
+        single_person: Whether to prompt once and track a single chosen person
 
     Returns:
         Dictionary with pipeline results and output paths
@@ -192,6 +203,7 @@ def run_pipeline(
     print(f"Subject: height={subject_height}m, mass={subject_mass}kg")
     print(f"Device: {device}")
     print(f"Detector: {detector_name or 'none'}, FOV: {fov_name or 'none'}, Segmentor: {segmentor_name or 'none'}")
+    print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")
     print(f"{'='*60}\n")
 
     # Step 1: Get video info and extract frames
@@ -221,11 +233,15 @@ def run_pipeline(
         mhr_path=config["sam3d"]["mhr_path"],
         device=device,
         detector_name=detector_name,
+        detector_path=config["sam3d"].get("detector_path"),
         segmentor_name=segmentor_name,
+        segmentor_path=config["sam3d"].get("segmentor_path"),
         fov_name=fov_name,
+        fov_path=config["sam3d"].get("fov_path"),
         bbox_threshold=config["sam3d"]["bbox_threshold"],
         use_mask=use_mask,
         inference_type=config["sam3d"]["inference_type"],
+        single_person=single_person,
     )
 
     inference_results = sam3d.process_video(frame_paths, progress=True)
@@ -255,14 +271,32 @@ def run_pipeline(
         frame_name = Path(frame_data["frame_path"]).name
         frame_entry = {"frame": frame_name, "outputs": []}
 
-        if frame_data["output"] is not None:
-            out = frame_data["output"]
+        outputs_to_save = []
+        if single_person:
+            if frame_data["output"] is not None:
+                outputs_to_save = [frame_data["output"]]
+        else:
+            outputs_to_save = frame_data.get("outputs", [])
+
+        for output_idx, out in enumerate(outputs_to_save):
+            if single_person and output_idx == 0:
+                pred_keypoints_3d = keypoints_3d[i].tolist()
+                pred_cam_t = camera_params["cam_translations"][i].tolist()
+            else:
+                pred_keypoints_3d = np.array(out.get("pred_keypoints_3d", [])).tolist()
+                pred_cam_t = np.array(out.get("pred_cam_t", [0, 0, 5])).tolist()
+
             person_data = {
                 "bbox": out.get("bbox", [0, 0, video_info['width'], video_info['height']]),
                 "focal_length": float(out.get("focal_length", 1000.0)),
-                "pred_keypoints_3d": keypoints_3d[i].tolist(),
-                "pred_cam_t": camera_params["cam_translations"][i].tolist(),
+                "pred_keypoints_3d": pred_keypoints_3d,
+                "pred_cam_t": pred_cam_t,
             }
+            if "pred_keypoints_2d" in out:
+                person_data["pred_keypoints_2d"] = np.array(out["pred_keypoints_2d"]).tolist()
+            if "shape_params" in out:
+                person_data["shape_params"] = np.array(out["shape_params"]).tolist()
+
             frame_entry["outputs"].append(person_data)
 
         sam3d_outputs.append(frame_entry)
@@ -278,6 +312,8 @@ def run_pipeline(
         "fps": actual_fps,
         "num_frames": len(frame_paths),
         "video_info": video_info,
+        "single_person": single_person,
+        "selection": inference_results.get("selection", {}),
     }, meta_path)
 
     print(f"  Saved SAM3D format: {sam3d_json_path}")
@@ -416,9 +452,11 @@ def run_pipeline(
                 "num_frames": len(frame_paths),
                 "valid_frames": int(np.sum(valid_frames)),
                 "num_markers": len(marker_names),
+                "single_person": single_person,
             },
             "timings": results["timings"],
             "outputs": results["outputs"],
+            "selection": inference_results.get("selection", {}),
         },
         report_path,
     )
@@ -468,6 +506,7 @@ def main():
             fov=args.fov,
             use_mask=args.use_mask,
             smooth_cutoff=args.smooth,
+            single_person=args.single_person,
         )
 
         if not results["success"]:
