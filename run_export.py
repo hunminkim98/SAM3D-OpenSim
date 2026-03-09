@@ -50,6 +50,12 @@ def parse_args():
     parser.add_argument("--skip-fbx", action="store_true", help="Skip FBX export")
     parser.add_argument("--person", type=int, default=0, help="Person index if multiple detected")
     parser.add_argument("--smooth", type=float, default=6.0, help="Smoothing cutoff frequency in Hz (0 to disable)")
+    parser.add_argument(
+        "--ground-alignment-mode",
+        choices=["auto", "contact_aware", "per_frame_snap"],
+        default="auto",
+        help="Ground alignment strategy (default: auto)",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +117,7 @@ def run_export(
     skip_fbx: bool,
     person_idx: int,
     smooth_cutoff: float = 6.0,
+    ground_alignment_mode: str = "auto",
 ):
     """Export SAM3D outputs to TRC/MOT/FBX."""
     start_time = time.time()
@@ -126,6 +133,7 @@ def run_export(
     print(f"Output: {output_dir}")
     print(f"Subject: height={subject_height}m, mass={subject_mass}kg")
     print(f"Global translation: {'ENABLED' if global_translation else 'disabled'}")
+    print(f"Ground alignment: {ground_alignment_mode}")
     print(f"{'='*60}\n")
 
     # Load data
@@ -169,6 +177,14 @@ def run_export(
         center_pelvis=not global_translation,
         align_to_ground=True,
         apply_global_translation=global_translation,
+        ground_alignment_mode=ground_alignment_mode,
+    )
+    ground_alignment_info = transformer.get_last_ground_alignment_info()
+    print(
+        "  Ground alignment applied: "
+        f"{ground_alignment_info.get('applied_mode')} "
+        f"(contact_frames={ground_alignment_info.get('contact_frames')}, "
+        f"flight_frames={ground_alignment_info.get('flight_frames')})"
     )
     print("  Coordinate transformation complete")
 
@@ -430,6 +446,7 @@ def main():
         skip_fbx=args.skip_fbx,
         person_idx=args.person,
         smooth_cutoff=args.smooth,
+        ground_alignment_mode=args.ground_alignment_mode,
     )
 
 

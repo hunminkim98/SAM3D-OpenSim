@@ -53,6 +53,12 @@ def parse_args():
     parser.add_argument("--smooth", type=float, default=6.0,
                         help="Smoothing cutoff frequency in Hz (0 to disable, default: 6.0)")
     parser.add_argument(
+        "--ground-alignment-mode",
+        choices=["auto", "contact_aware", "per_frame_snap"],
+        default=None,
+        help="Ground alignment strategy (default: from config, usually auto)",
+    )
+    parser.add_argument(
         "--single_person",
         type=str_to_bool,
         nargs="?",
@@ -66,7 +72,7 @@ def parse_args():
 
 def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=False,
                         detector="vitdet", segmentor=None, fov="moge2", use_mask=False,
-                        smooth_cutoff=6.0, single_person=True):
+                        smooth_cutoff=6.0, ground_alignment_mode=None, single_person=True):
     """Run SAM3D Body inference stage."""
     print("\n" + "=" * 60)
     print("Stage 1: SAM3D Body Inference")
@@ -91,6 +97,9 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
         "--single_person", str(bool(single_person)).lower(),
     ]
 
+    if ground_alignment_mode:
+        cmd.extend(["--ground-alignment-mode", ground_alignment_mode])
+
     if segmentor:
         cmd.extend(["--segmentor", segmentor])
 
@@ -101,6 +110,7 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
         cmd.append("--global-translation")
 
     print(f"  Detector: {detector}, FOV: {fov}, Segmentor: {segmentor or 'none'}")
+    print(f"  Ground alignment: {ground_alignment_mode or 'config/default'}")
     print(f"  Single-person selection: {'ENABLED' if single_person else 'disabled'}")
     print(f"  Python: {sam3d_python}")
     if global_translation:
@@ -425,6 +435,7 @@ def main():
     print(f"Subject: height={args.height}m, mass={args.mass}kg")
     print(f"FPS: {args.fps}")
     print(f"SAM3D: detector={args.detector}, fov={args.fov}, segmentor={args.segmentor or 'none'}")
+    print(f"Ground alignment: {args.ground_alignment_mode or 'config/default'}")
     print(f"Single-person selection: {'ENABLED' if args.single_person else 'disabled'}")
     print(f"Global translation: {'ENABLED' if args.global_translation else 'disabled'}")
 
@@ -461,6 +472,7 @@ def main():
                 fov=args.fov,
                 use_mask=args.use_mask,
                 smooth_cutoff=args.smooth,
+                ground_alignment_mode=args.ground_alignment_mode,
                 single_person=args.single_person,
             )
             trc_files = list(output_dir.glob("*.trc"))

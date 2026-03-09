@@ -122,6 +122,13 @@ def parse_args():
     parser.add_argument("--smooth", type=float, default=6.0,
                         help="Smoothing cutoff frequency in Hz (0 to disable, default: 6.0)")
     parser.add_argument(
+        "--ground-alignment-mode",
+        type=str,
+        choices=["auto", "contact_aware", "per_frame_snap"],
+        default=None,
+        help="Ground alignment strategy (default: from config, usually auto)",
+    )
+    parser.add_argument(
         "--single_person",
         type=str_to_bool,
         nargs="?",
@@ -150,6 +157,7 @@ def run_pipeline(
     fov: str = "moge2",
     use_mask: bool = False,
     smooth_cutoff: float = 6.0,
+    ground_alignment_mode: Optional[str] = None,
     single_person: bool = True,
 ) -> dict:
     """
@@ -171,6 +179,7 @@ def run_pipeline(
         segmentor: Segmentor ('sam2' or None)
         fov: FOV estimator ('moge2' or 'none')
         use_mask: Whether to use segmentation masks
+        ground_alignment_mode: Ground alignment mode override
         single_person: Whether to prompt once and track a single chosen person
 
     Returns:
@@ -182,6 +191,10 @@ def run_pipeline(
     # Load configuration
     config = load_config(config_path)
     marker_mapping = load_marker_mapping()
+    resolved_ground_alignment_mode = (
+        ground_alignment_mode
+        or config.get("processing", {}).get("ground_alignment_mode", "auto")
+    )
 
     # Setup output directory
     if output_dir is None:
@@ -203,6 +216,7 @@ def run_pipeline(
     print(f"Subject: height={subject_height}m, mass={subject_mass}kg")
     print(f"Device: {device}")
     print(f"Detector: {detector_name or 'none'}, FOV: {fov_name or 'none'}, Segmentor: {segmentor_name or 'none'}")
+    print(f"Ground alignment: {resolved_ground_alignment_mode}")
     print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")
     print(f"{'='*60}\n")
 
@@ -307,14 +321,14 @@ def run_pipeline(
 
     # Save metadata for run_export.py
     meta_path = output_dir / "inference_meta.json"
-    save_json({
+    meta_payload = {
         "input_video": str(input_path),
         "fps": actual_fps,
         "num_frames": len(frame_paths),
         "video_info": video_info,
         "single_person": single_person,
         "selection": inference_results.get("selection", {}),
-    }, meta_path)
+    }
 
     print(f"  Saved SAM3D format: {sam3d_json_path}")
 
@@ -357,7 +371,17 @@ def run_pipeline(
         center_pelvis=not global_translation,  # Don't center if using global translation
         align_to_ground=True,
         apply_global_translation=global_translation,
+        ground_alignment_mode=resolved_ground_alignment_mode,
     )
+    ground_alignment_info = transformer.get_last_ground_alignment_info()
+    print(
+        "  Ground alignment applied: "
+        f"{ground_alignment_info.get('applied_mode')} "
+        f"(contact_frames={ground_alignment_info.get('contact_frames')}, "
+        f"flight_frames={ground_alignment_info.get('flight_frames')})"
+    )
+    meta_payload["ground_alignment"] = ground_alignment_info
+    save_json(meta_payload, meta_path)
 
     # Correct forward lean if enabled
     if config["processing"]["correct_forward_lean"]:
@@ -453,6 +477,7 @@ def run_pipeline(
                 "valid_frames": int(np.sum(valid_frames)),
                 "num_markers": len(marker_names),
                 "single_person": single_person,
+                "ground_alignment": ground_alignment_info,
             },
             "timings": results["timings"],
             "outputs": results["outputs"],
@@ -506,6 +531,7 @@ def main():
             fov=args.fov,
             use_mask=args.use_mask,
             smooth_cutoff=args.smooth,
+            ground_alignment_mode=args.ground_alignment_mode,
             single_person=args.single_person,
         )
 

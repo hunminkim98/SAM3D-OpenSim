@@ -31,6 +31,12 @@ sam3d:
   inference_type: "full"  # "full", "body", or "hand"
 
 processing:
+  # Ground alignment
+  # auto: preserve airborne motion when a flight phase is detected
+  # contact_aware: preserve airborne motion and only re-anchor during stance
+  # per_frame_snap: legacy mode, lowest foot point is snapped to Y=0 every frame
+  ground_alignment_mode: auto
+
   # Temporal smoothing (Butterworth low-pass filter)
   smooth_filter: true
   filter_cutoff: 6  # Hz - cutoff frequency for smoothing

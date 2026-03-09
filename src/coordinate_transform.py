@@ -6,7 +6,7 @@ SAM3D Body's camera-centric coordinate system to OpenSim's
 biomechanical world coordinate system.
 """
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
 
 
@@ -53,6 +53,17 @@ class CoordinateTransformer:
         self.subject_height = subject_height
         self.units = units
         self.scale_factor = 1000.0 if units == "mm" else 1.0
+        self.last_ground_alignment_info: Dict[str, object] = {
+            "requested_mode": None,
+            "applied_mode": None,
+            "contact_frames": 0,
+            "flight_frames": 0,
+            "longest_flight_run": 0,
+        }
+
+    def get_last_ground_alignment_info(self) -> Dict[str, object]:
+        """Return metadata about the most recent ground-alignment pass."""
+        return dict(self.last_ground_alignment_info)
 
     def transform(
         self,
@@ -62,6 +73,7 @@ class CoordinateTransformer:
         center_pelvis: bool = True,
         align_to_ground: bool = True,
         apply_global_translation: bool = False,
+        ground_alignment_mode: str = "auto",
     ) -> np.ndarray:
         """
         Transform keypoints from camera to OpenSim coordinates.
@@ -74,6 +86,10 @@ class CoordinateTransformer:
             center_pelvis: Whether to center at pelvis (ignored if apply_global_translation=True)
             align_to_ground: Whether to align feet to ground plane
             apply_global_translation: Whether to use camera_translation for global movement
+            ground_alignment_mode: Ground-alignment strategy:
+                - 'auto': detect jump-like flight phases and preserve airborne Y motion
+                - 'contact_aware': preserve Y during flight, only re-anchor during stance
+                - 'per_frame_snap': legacy mode, lowest foot point is snapped to Y=0 every frame
 
         Returns:
             Transformed keypoints in OpenSim coordinates
@@ -103,7 +119,10 @@ class CoordinateTransformer:
 
         # Align to ground
         if align_to_ground:
-            transformed = self._align_to_ground(transformed)
+            transformed = self._align_to_ground(
+                transformed,
+                mode=ground_alignment_mode,
+            )
 
         # Convert units
         transformed = transformed * self.scale_factor
@@ -299,6 +318,66 @@ class CoordinateTransformer:
 
         return contact
 
+    @staticmethod
+    def _longest_true_run(mask: np.ndarray) -> int:
+        """Return the maximum length of consecutive True values."""
+        longest = 0
+        current = 0
+        for is_true in mask.astype(bool):
+            if is_true:
+                current += 1
+                longest = max(longest, current)
+            else:
+                current = 0
+        return longest
+
+    def _compute_contact_data(self, keypoints: np.ndarray) -> Dict[str, np.ndarray]:
+        """Estimate stance/flight phases from heel and toe trajectories."""
+        left_heel_idx = 17
+        right_heel_idx = 20
+        left_toe_idx = 15
+        right_toe_idx = 18
+
+        left_heel = keypoints[:, left_heel_idx]
+        right_heel = keypoints[:, right_heel_idx]
+        left_toe = keypoints[:, left_toe_idx]
+        right_toe = keypoints[:, right_toe_idx]
+
+        left_contact = self._detect_foot_contact(
+            left_heel,
+            height_threshold=0.07,
+            velocity_threshold=0.10,
+        ) | self._detect_foot_contact(
+            left_toe,
+            height_threshold=0.07,
+            velocity_threshold=0.10,
+        )
+        right_contact = self._detect_foot_contact(
+            right_heel,
+            height_threshold=0.07,
+            velocity_threshold=0.10,
+        ) | self._detect_foot_contact(
+            right_toe,
+            height_threshold=0.07,
+            velocity_threshold=0.10,
+        )
+
+        left_contact = self._clean_contact_signal(left_contact, min_gap=2, min_duration=3)
+        right_contact = self._clean_contact_signal(right_contact, min_gap=2, min_duration=3)
+        any_contact = left_contact | right_contact
+        flight = ~any_contact
+
+        foot_indices = [left_heel_idx, right_heel_idx, left_toe_idx, right_toe_idx]
+        min_foot_y = np.min(keypoints[:, foot_indices, 1], axis=1)
+
+        return {
+            "left_contact": left_contact,
+            "right_contact": right_contact,
+            "any_contact": any_contact,
+            "flight": flight,
+            "min_foot_y": min_foot_y,
+        }
+
     def _compute_foot_anchored_translation(
         self,
         keypoints: np.ndarray,
@@ -469,12 +548,11 @@ class CoordinateTransformer:
 
         return keypoints
 
-    def _align_to_ground(self, keypoints: np.ndarray) -> np.ndarray:
+    def _align_to_ground_per_frame(self, keypoints: np.ndarray) -> np.ndarray:
         """
-        Align skeleton so lowest foot point is at ground level (Y=0) per frame.
+        Legacy alignment: lowest foot point is snapped to Y=0 every frame.
 
-        This ensures the character is always touching the ground with at least
-        one foot, which is more realistic for walking/running animations.
+        This removes airborne height and is kept only as a compatibility mode.
 
         Args:
             keypoints: (N, K, 3) keypoints
@@ -488,21 +566,98 @@ class CoordinateTransformer:
         left_toe_idx = 15   # left_big_toe
         right_toe_idx = 18  # right_big_toe
 
+        aligned = keypoints.copy()
+
         # Per-frame alignment: lowest foot point at Y=0
-        for i in range(keypoints.shape[0]):
-            # Find the lowest Y among all foot points
+        for i in range(aligned.shape[0]):
             foot_heights = [
-                keypoints[i, left_heel_idx, 1],
-                keypoints[i, right_heel_idx, 1],
-                keypoints[i, left_toe_idx, 1],
-                keypoints[i, right_toe_idx, 1],
+                aligned[i, left_heel_idx, 1],
+                aligned[i, right_heel_idx, 1],
+                aligned[i, left_toe_idx, 1],
+                aligned[i, right_toe_idx, 1],
             ]
             min_y = min(foot_heights)
+            aligned[i, :, 1] -= min_y
 
-            # Shift this frame so lowest foot is at Y=0
-            keypoints[i, :, 1] -= min_y
+        return aligned
 
-        return keypoints
+    def _align_to_ground_contact_aware(
+        self,
+        keypoints: np.ndarray,
+        contact_data: Dict[str, np.ndarray],
+    ) -> np.ndarray:
+        """
+        Preserve jump height by only re-anchoring Y during stance frames.
+
+        During flight, the most recent stance offset is held instead of snapping
+        the current frame back to the ground plane.
+        """
+        aligned = keypoints.copy()
+        contact_mask = contact_data["any_contact"]
+        min_foot_y = contact_data["min_foot_y"]
+        num_frames = len(aligned)
+
+        if not np.any(contact_mask):
+            return self._align_to_ground_per_frame(aligned)
+
+        vertical_offsets = np.zeros(num_frames, dtype=np.float32)
+        first_contact_idx = int(np.flatnonzero(contact_mask)[0])
+        current_offset = -float(min_foot_y[first_contact_idx])
+        vertical_offsets[: first_contact_idx + 1] = current_offset
+
+        for i in range(first_contact_idx, num_frames):
+            if contact_mask[i]:
+                current_offset = -float(min_foot_y[i])
+            vertical_offsets[i] = current_offset
+
+        for i in range(keypoints.shape[0]):
+            aligned[i, :, 1] += vertical_offsets[i]
+
+        return aligned
+
+    def _align_to_ground(
+        self,
+        keypoints: np.ndarray,
+        mode: str = "auto",
+    ) -> np.ndarray:
+        """
+        Align skeleton to ground using the requested strategy.
+
+        Modes:
+            per_frame_snap: legacy per-frame foot snap
+            contact_aware: preserve airborne Y, re-anchor only during stance
+            auto: choose contact_aware when a sustained flight phase is detected
+        """
+        requested_mode = (mode or "auto").lower()
+        valid_modes = {"auto", "contact_aware", "per_frame_snap"}
+        if requested_mode not in valid_modes:
+            raise ValueError(
+                f"Unsupported ground alignment mode: {mode}. "
+                f"Expected one of {sorted(valid_modes)}."
+            )
+
+        contact_data = self._compute_contact_data(keypoints)
+        longest_flight_run = self._longest_true_run(contact_data["flight"])
+
+        applied_mode = requested_mode
+        if requested_mode == "auto":
+            applied_mode = "contact_aware" if longest_flight_run >= 3 else "per_frame_snap"
+
+        if applied_mode == "contact_aware" and not np.any(contact_data["any_contact"]):
+            applied_mode = "per_frame_snap"
+
+        self.last_ground_alignment_info = {
+            "requested_mode": requested_mode,
+            "applied_mode": applied_mode,
+            "contact_frames": int(np.sum(contact_data["any_contact"])),
+            "flight_frames": int(np.sum(contact_data["flight"])),
+            "longest_flight_run": int(longest_flight_run),
+        }
+
+        if applied_mode == "contact_aware":
+            return self._align_to_ground_contact_aware(keypoints, contact_data)
+
+        return self._align_to_ground_per_frame(keypoints)
 
     def correct_forward_lean(
         self,
