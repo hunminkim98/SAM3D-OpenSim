@@ -1,17 +1,19 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-08 12:51:08 KST -->
+<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-10 09:53:31 KST -->
 
 # utils
 
 ## Purpose
-This directory contains shared helper functions for loading configuration, serializing pipeline data, generating output directories, and extracting or reassembling video frames. The CLIs use these utilities to keep file and media handling out of the core pipeline modules.
+This directory contains shared helper functions for loading configuration, resolving Windows tool paths, parsing lightweight CLI flags, serializing pipeline data, generating output directories, and extracting or reassembling video frames. The CLIs use these utilities to keep file and media handling out of the core pipeline modules.
 
 ## Key Files
 | File | Description |
 |------|-------------|
 | `io_utils.py` | YAML, JSON, and pickle helpers plus output-directory naming and config merging utilities. |
+| `windows_paths.py` | Windows and WSL-aware discovery helpers for Conda envs, Pose2Sim assets, and Blender executables. |
+| `cli_utils.py` | Shared small CLI parsers such as strict string-to-bool conversion. |
 | `video_utils.py` | Video metadata inspection, frame extraction, frame streaming, and frame-to-video assembly helpers. |
-| `__init__.py` | Package marker for utility imports. |
+| `__init__.py` | Lightweight utility package entry point that avoids eager heavy imports. |
 
 ## Subdirectories
 This directory has no versioned subdirectories.
@@ -31,6 +33,7 @@ This directory has no versioned subdirectories.
 ### Common Patterns
 - Paths are normalized with `pathlib.Path`.
 - Serialization helpers include NumPy-aware conversion so pipeline arrays can be written directly to JSON.
+- Windows path helpers must work for both native Windows and WSL-translated `/mnt/<drive>` paths.
 - Frame extraction writes deterministic sequential filenames such as `frame_000000.jpg`.
 
 ## Dependencies

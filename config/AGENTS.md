@@ -1,16 +1,16 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-08 12:51:08 KST -->
+<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-10 09:53:31 KST -->
 
 # config
 
 ## Purpose
-This directory contains YAML configuration that defines repository-local defaults for external tool paths, inference behavior, smoothing and normalization settings, and the mapping from SAM3D Body's MHR70 skeleton to OpenSim marker names and body segments.
+This directory contains YAML configuration that defines repository-local defaults for external tool paths, inference behavior, support-surface selection, ground and vertical translation modes, post-IK correction, and the mapping from SAM3D Body's MHR70 skeleton to OpenSim marker names, weights, and body segments.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `config.yaml` | Primary pipeline configuration with SAM3D, processing, OpenSim, and output defaults. |
-| `marker_mapping.yaml` | Declarative MHR70 keypoint names, OpenSim marker mappings, derived markers, and body-segment assignments. |
+| `config.yaml` | Primary pipeline configuration with SAM3D, processing, support-surface, OpenSim, and output defaults. |
+| `marker_mapping.yaml` | Declarative MHR70 keypoint names, OpenSim marker mappings, derived markers, body-segment assignments, and runtime marker weights. |
 
 ## Subdirectories
 This directory has no versioned subdirectories.
@@ -19,7 +19,7 @@ This directory has no versioned subdirectories.
 
 ### Working In This Directory
 - Keep YAML keys synchronized with the fields consumed by `utils/io_utils.py`, `run_pipeline.py`, and `run_inference.py`.
-- Treat marker names as API surface: if a marker is renamed here, update `src/keypoint_converter.py`, `models/Markers_MHR70.xml`, and any IK task generation that references it.
+- Treat marker names and weights as API surface: if a marker is renamed here, update `src/keypoint_converter.py`, `models/Markers_MHR70.xml`, and any IK task generation that references it.
 - Preserve Windows path examples unless the repository is explicitly being made cross-platform.
 
 ### Testing Requirements
@@ -29,14 +29,15 @@ This directory has no versioned subdirectories.
 
 ### Common Patterns
 - `config.yaml` stores operational defaults and absolute external paths.
-- `marker_mapping.yaml` mirrors code-level defaults so changes should normally be reflected in both places.
+- `config.yaml` is the default source for `single_person`, `ground_alignment_mode`, `vertical_translation_mode`, `support_surface_mode`, and `post_ik_foot_snap_mode`.
+- `marker_mapping.yaml` mirrors code-level defaults so changes should normally be reflected in both the converter and the runtime OpenSim marker/task helper.
 
 ## Dependencies
 
 ### Internal
 - `utils/io_utils.py` loads both YAML files.
 - `src/keypoint_converter.py` can use mapping data and mirrors the default marker naming.
-- `src/opensim_ik.py` and `run_export.py` depend on marker naming consistency.
+- `src/opensim_marker_spec.py`, `src/opensim_ik.py`, and `run_export.py` depend on marker naming and weight consistency.
 
 ### External
 - PyYAML for parsing configuration.
