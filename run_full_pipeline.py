@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +60,12 @@ def parse_args():
         help="Ground alignment strategy (default: from config, usually auto)",
     )
     parser.add_argument(
+        "--vertical-translation-mode",
+        choices=["auto", "legacy_xz_only", "hybrid_support_plane"],
+        default=None,
+        help="Vertical translation strategy (default: from config, usually auto)",
+    )
+    parser.add_argument(
         "--single_person",
         type=str_to_bool,
         nargs="?",
@@ -66,13 +73,26 @@ def parse_args():
         default=True,
         help="Prompt once to choose a single tracked person (default: true)",
     )
+    parser.add_argument(
+        "--support-surface-mode",
+        choices=["auto", "manual_roi"],
+        default=None,
+        help="Support-surface selection mode (default: from config, usually auto)",
+    )
+    parser.add_argument(
+        "--post-ik-foot-snap",
+        choices=["off", "auto", "stance_only"],
+        default="off",
+        help="Postprocess MOT after IK to reduce stance-phase foot hover (default: off)",
+    )
 
     return parser.parse_args()
 
 
 def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=False,
                         detector="vitdet", segmentor=None, fov="moge2", use_mask=False,
-                        smooth_cutoff=6.0, ground_alignment_mode=None, single_person=True):
+                        smooth_cutoff=6.0, ground_alignment_mode=None, single_person=True,
+                        support_surface_mode=None, vertical_translation_mode=None):
     """Run SAM3D Body inference stage."""
     print("\n" + "=" * 60)
     print("Stage 1: SAM3D Body Inference")
@@ -99,6 +119,10 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
 
     if ground_alignment_mode:
         cmd.extend(["--ground-alignment-mode", ground_alignment_mode])
+    if vertical_translation_mode:
+        cmd.extend(["--vertical-translation-mode", vertical_translation_mode])
+    if support_surface_mode:
+        cmd.extend(["--support-surface-mode", support_surface_mode])
 
     if segmentor:
         cmd.extend(["--segmentor", segmentor])
@@ -111,7 +135,9 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
 
     print(f"  Detector: {detector}, FOV: {fov}, Segmentor: {segmentor or 'none'}")
     print(f"  Ground alignment: {ground_alignment_mode or 'config/default'}")
+    print(f"  Vertical translation: {vertical_translation_mode or 'config/default'}")
     print(f"  Single-person selection: {'ENABLED' if single_person else 'disabled'}")
+    print(f"  Support surface: {support_surface_mode or 'config/default'}")
     print(f"  Python: {sam3d_python}")
     if global_translation:
         print("  Global translation: ENABLED")
@@ -125,7 +151,7 @@ def run_sam3d_inference(input_path, output_dir, height, fps, global_translation=
     return True
 
 
-def run_opensim_ik(output_dir, height, mass):
+def run_opensim_ik(output_dir, height, mass, post_ik_foot_snap_mode="off"):
     """Run OpenSim inverse kinematics using MotionBERT-OpenSim approach."""
     print("\n" + "=" * 60)
     print("Stage 2: OpenSim Inverse Kinematics")
@@ -139,6 +165,11 @@ def run_opensim_ik(output_dir, height, mass):
         opensim_python=opensim_python,
         override_vars=("SAM3D_OPENSIM_POSE2SIM_SETUP", "POSE2SIM_SETUP"),
     )
+    from src.opensim_marker_spec import (
+        build_ik_taskset_xml,
+        format_lower_body_marker_summary,
+        get_runtime_ik_marker_specs,
+    )
 
     # Convert to absolute path
     output_dir = Path(output_dir).resolve()
@@ -149,25 +180,31 @@ def run_opensim_ik(output_dir, height, mass):
         raise FileNotFoundError(f"No TRC file found in {output_dir}")
     trc_path = trc_files[0].resolve()
     print(f"TRC file: {trc_path}")
+    marker_specs = get_runtime_ik_marker_specs(PROJECT_ROOT)
+    marker_specs_json = json.dumps(marker_specs)
+    marker_task_xml = build_ik_taskset_xml(marker_specs)
+    print(f"IK lower-body markers: {format_lower_body_marker_summary(marker_specs)}")
 
     # Create IK runner script following MotionBERT-OpenSim approach
     ik_script = """
+import opensim as osim
+import json
 import sys
 from pathlib import Path
-import opensim as osim
 
-# Paths
+project_root = Path(r"{project_root}")
 trc_path = Path(r"{trc_path}")
 output_dir = Path(r"{output_dir}")
 pose2sim_setup = Path(r"{pose2sim_setup}")
+marker_specs = json.loads(r'''{marker_specs_json}''')
+marker_task_xml = r'''{marker_task_xml}'''
+post_ik_foot_snap_mode = r"{post_ik_foot_snap_mode}"
 
-# Use Pose2Sim simple model (same as MotionBERT-OpenSim)
 model_path = pose2sim_setup / "Model_Pose2Sim_simple.osim"
 
 print(f"Model: {{model_path}}")
 print(f"TRC: {{trc_path}}")
 
-# Read TRC to get time range
 def get_trc_time_range(trc_file):
     with open(trc_file, 'r') as f:
         lines = f.readlines()
@@ -179,56 +216,53 @@ def get_trc_time_range(trc_file):
 time_range = get_trc_time_range(str(trc_path))
 print(f"Time range: {{time_range[0]:.3f}} - {{time_range[1]:.3f}} s")
 
-# Output paths
 stem = trc_path.stem
 mot_path = output_dir / f"{{stem}}_ik.mot"
 setup_file = output_dir / f"{{stem}}_ik_setup.xml"
 marker_set_file = output_dir / f"{{stem}}_ik_markers.xml"
 
-# Create IK marker task set (weight for each marker)
-# Head markers have varied weights based on stability:
-# - Nose: 0.8 (stable front face landmark)
-# - Eyes: 0.4 (useful for pitch/roll, less stable)
-# - Ears: 0.6 (very stable for yaw tracking)
-# - Neck: 1.0 (most stable reference)
-# Hand markers help define forearm rotation (pronation/supination)
-MARKER_WEIGHTS = [
-    # Head markers (improved tracking with eyes and ears)
-    ("Nose", 0.8), ("LEye", 0.4), ("REye", 0.4), ("LEar", 0.6), ("REar", 0.6),
-    ("Neck", 1.0),
-    # Body markers
-    ("LShoulder", 1.0), ("RShoulder", 1.0),
-    ("LElbow", 1.0), ("RElbow", 1.0), ("LWrist", 1.0), ("RWrist", 1.0),
-    # Hand markers for forearm rotation (index knuckle + middle fingertip)
-    ("LIndex3", 0.6), ("RIndex3", 0.6),       # Index knuckle (base of finger)
-    ("LMiddleTip", 0.5), ("RMiddleTip", 0.5), # Middle fingertip
-    # Lower body
-    ("LHip", 1.0), ("RHip", 1.0), ("LKnee", 1.0), ("RKnee", 1.0),
-    ("LAnkle", 1.0), ("RAnkle", 1.0),
-]
-
-# Create marker task set XML
-marker_xml = '<?xml version="1.0" encoding="UTF-8" ?>\\n'
-marker_xml += '<OpenSimDocument Version="40000">\\n'
-marker_xml += '    <IKTaskSet name="sam3d_markers">\\n'
-marker_xml += '        <objects>\\n'
-for marker_name, weight in MARKER_WEIGHTS:
-    marker_xml += f'            <IKMarkerTask name="{{marker_name}}">\\n'
-    marker_xml += '                <apply>true</apply>\\n'
-    marker_xml += f'                <weight>{{weight}}</weight>\\n'
-    marker_xml += '            </IKMarkerTask>\\n'
-marker_xml += '        </objects>\\n'
-marker_xml += '    </IKTaskSet>\\n'
-marker_xml += '</OpenSimDocument>\\n'
-
 with open(marker_set_file, 'w') as f:
-    f.write(marker_xml)
+    f.write(marker_task_xml)
 
-# Create IK setup XML
+print("Running OpenSim IK...")
+print(
+    "Configured IK foot markers: "
+    + ", ".join(
+        f"{{spec['name']}}={{spec['weight']:.2f}}"
+        for spec in marker_specs
+        if spec["name"] in ("LBigToe", "LSmallToe", "LHeel", "RBigToe", "RSmallToe", "RHeel")
+    )
+)
+
+model = osim.Model(str(model_path))
+print("Adding markers to model:")
+for spec in marker_specs:
+    try:
+        marker_name = spec["name"]
+        body_name = spec["body"]
+        x, y, z = spec["location"]
+        body = model.getBodySet().get(body_name)
+        marker = osim.Marker()
+        marker.setName(marker_name)
+        marker.setParentFrame(body)
+        marker.set_location(osim.Vec3(x, y, z))
+        model.addMarker(marker)
+        print(f"  {{marker_name}} -> {{body_name}}")
+    except Exception as e:
+        print(f"  Warning: Could not add {{marker_name}}: {{e}}")
+
+model.finalizeConnections()
+model.initSystem()
+print(f"Model initialized with {{model.getMarkerSet().getSize()}} markers")
+
+model_with_markers_path = output_dir / f"{{stem}}_model.osim"
+model.printToXML(str(model_with_markers_path))
+print(f"Model with markers saved to: {{model_with_markers_path}}")
+
 ik_setup_xml = '<?xml version="1.0" encoding="UTF-8" ?>\\n'
 ik_setup_xml += '<OpenSimDocument Version="40000">\\n'
 ik_setup_xml += '    <InverseKinematicsTool name="ik_tool">\\n'
-ik_setup_xml += f'        <model_file>{{str(model_path)}}</model_file>\\n'
+ik_setup_xml += f'        <model_file>{{str(model_with_markers_path)}}</model_file>\\n'
 ik_setup_xml += '        <constraint_weight>20</constraint_weight>\\n'
 ik_setup_xml += '        <accuracy>1e-5</accuracy>\\n'
 ik_setup_xml += f'        <marker_file>{{str(trc_path)}}</marker_file>\\n'
@@ -245,88 +279,42 @@ ik_setup_xml += '</OpenSimDocument>\\n'
 with open(setup_file, 'w') as f:
     f.write(ik_setup_xml)
 
-print("Running OpenSim IK...")
-
-# Load model and add markers
-model = osim.Model(str(model_path))
-
-# Define markers with their body assignments and locations
-# Format: (marker_name, body_name, x, y, z)
-# Head markers include eyes and ears for improved head tracking
-# Positions are in meters, relative to body segment origin
-COCO17_MARKERS = [
-    # Head markers (6 total for robust head tracking)
-    ("Nose", "head", 0.116266, 0.0126096, 0.0),        # Front of face
-    ("LEye", "head", 0.08, 0.025, -0.032),              # Left eye (lateral offset)
-    ("REye", "head", 0.08, 0.025, 0.032),               # Right eye (lateral offset)
-    ("LEar", "head", -0.02, 0.015, -0.075),             # Left ear (behind, lateral)
-    ("REar", "head", -0.02, 0.015, 0.075),              # Right ear (behind, lateral)
-    # Neck/torso
-    ("Neck", "torso", -0.0127516, 0.366307, -0.000509),
-    ("LShoulder", "torso", -0.0127516, 0.366307, -0.201574),
-    ("RShoulder", "torso", -0.0127516, 0.366307, 0.201574),
-    # Arms
-    ("LElbow", "humerus_l", 0.025, -0.297955, 0.008738),
-    ("RElbow", "humerus_r", 0.025, -0.297955, -0.008738),
-    ("LWrist", "radius_l", -0.000174, -0.235096, -0.009744),
-    ("RWrist", "radius_r", -0.000174, -0.235096, 0.009744),
-    # Hand markers for forearm rotation (attached to radius/forearm)
-    # Index knuckle (base) - helps define radial side of hand
-    ("LIndex3", "radius_l", 0.02, -0.32, -0.03),       # Distal to wrist, radial side
-    ("RIndex3", "radius_r", 0.02, -0.32, 0.03),        # Distal to wrist, radial side
-    # Middle fingertip - helps define hand orientation
-    ("LMiddleTip", "radius_l", 0.02, -0.42, -0.01),    # Far distal, midline
-    ("RMiddleTip", "radius_r", 0.02, -0.42, 0.01),     # Far distal, midline
-    # Pelvis/legs
-    ("LHip", "pelvis", -0.063927, -0.081343, -0.105406),
-    ("RHip", "pelvis", -0.063927, -0.081343, 0.105406),
-    ("LKnee", "femur_l", -0.005410, -0.386132, -0.005111),
-    ("RKnee", "femur_r", -0.005410, -0.386132, 0.005111),
-    ("LAnkle", "tibia_l", -0.000286, -0.40805, -0.014960),
-    ("RAnkle", "tibia_r", -0.000286, -0.40805, 0.014960),
-]
-
-print("Adding markers to model:")
-for marker_name, body_name, x, y, z in COCO17_MARKERS:
-    try:
-        body = model.getBodySet().get(body_name)
-        marker = osim.Marker()
-        marker.setName(marker_name)
-        marker.setParentFrame(body)
-        marker.set_location(osim.Vec3(x, y, z))
-        model.addMarker(marker)
-        print(f"  {{marker_name}} -> {{body_name}}")
-    except Exception as e:
-        print(f"  Warning: Could not add {{marker_name}}: {{e}}")
-
-# Finalize connections and initialize
-model.finalizeConnections()
-model.initSystem()
-print(f"Model initialized with {{model.getMarkerSet().getSize()}} markers")
-
-# Save the model with markers
-model_with_markers_path = output_dir / f"{{stem}}_model.osim"
-model.printToXML(str(model_with_markers_path))
-print(f"Model with markers saved to: {{model_with_markers_path}}")
-
-# Setup and run IK tool
-ik_tool = osim.InverseKinematicsTool()
-ik_tool.setModel(model)
-ik_tool.setMarkerDataFileName(str(trc_path))
-ik_tool.setStartTime(time_range[0])
-ik_tool.setEndTime(time_range[1])
-ik_tool.setOutputMotionFileName(str(mot_path))
-ik_tool.setResultsDir(str(output_dir))
-
 try:
+    ik_tool = osim.InverseKinematicsTool(str(setup_file))
     ik_tool.run()
     print(f"SUCCESS: Motion file saved to {{mot_path}}")
 except Exception as e:
     print(f"IK Error: {{e}}")
     raise
 
+if post_ik_foot_snap_mode != "off":
+    sys.path.insert(0, str(project_root))
+    from src.post_ik_foot_snap import apply_post_ik_foot_snap
+
+    snap_report = apply_post_ik_foot_snap(
+        model_path=model_with_markers_path,
+        mot_path=mot_path,
+        output_dir=output_dir,
+        contact_meta_path=output_dir / "post_ik_contact_meta.json",
+        mode=post_ik_foot_snap_mode,
+    )
+    print(
+        "Post-IK foot snap: "
+        f"{{snap_report.get('status')}}"
+        f", corrected_frames={{snap_report.get('corrected_frames', 0)}}"
+        f", max_drop={{snap_report.get('max_applied_drop_m', 0.0):.4f}} m"
+    )
+
 print("IK completed successfully!")
-""".format(trc_path=trc_path, output_dir=output_dir, pose2sim_setup=pose2sim_setup)
+""".format(
+        project_root=PROJECT_ROOT,
+        trc_path=trc_path,
+        output_dir=output_dir,
+        pose2sim_setup=pose2sim_setup,
+        marker_specs_json=marker_specs_json,
+        marker_task_xml=marker_task_xml,
+        post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+    )
 
     # Write and run script
     ik_script_path = output_dir / "_run_ik.py"
@@ -436,7 +424,10 @@ def main():
     print(f"FPS: {args.fps}")
     print(f"SAM3D: detector={args.detector}, fov={args.fov}, segmentor={args.segmentor or 'none'}")
     print(f"Ground alignment: {args.ground_alignment_mode or 'config/default'}")
+    print(f"Vertical translation: {args.vertical_translation_mode or 'config/default'}")
+    print(f"Post-IK foot snap: {args.post_ik_foot_snap}")
     print(f"Single-person selection: {'ENABLED' if args.single_person else 'disabled'}")
+    print(f"Support surface: {args.support_surface_mode or 'config/default'}")
     print(f"Global translation: {'ENABLED' if args.global_translation else 'disabled'}")
 
     # Validate input
@@ -473,7 +464,9 @@ def main():
                 use_mask=args.use_mask,
                 smooth_cutoff=args.smooth,
                 ground_alignment_mode=args.ground_alignment_mode,
+                vertical_translation_mode=args.vertical_translation_mode,
                 single_person=args.single_person,
+                support_surface_mode=args.support_surface_mode,
             )
             trc_files = list(output_dir.glob("*.trc"))
             if trc_files:
@@ -490,7 +483,12 @@ def main():
     # Stage 2: OpenSim IK
     if not args.skip_ik:
         try:
-            mot_path = run_opensim_ik(output_dir, args.height, args.mass)
+            mot_path = run_opensim_ik(
+                output_dir,
+                args.height,
+                args.mass,
+                post_ik_foot_snap_mode=args.post_ik_foot_snap,
+            )
             results["mot"] = mot_path
         except Exception as e:
             print(f"Stage 2 ERROR: {e}")

@@ -36,6 +36,9 @@ processing:
   # contact_aware: preserve airborne motion and only re-anchor during stance
   # per_frame_snap: legacy mode, lowest foot point is snapped to Y=0 every frame
   ground_alignment_mode: auto
+  vertical_translation_mode: auto  # auto, legacy_xz_only, or hybrid_support_plane
+  support_surface_mode: auto  # auto or manual_roi for explicit support-surface ROI selection
+  post_ik_foot_snap_mode: off  # off, auto, or stance_only
 
   # Temporal smoothing (Butterworth low-pass filter)
   smooth_filter: true

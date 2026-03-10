@@ -354,7 +354,9 @@ class KeypointConverter:
             "REar": 0.3,
             # Feet
             "LBigToe": 0.5,
+            "LSmallToe": 0.35,
             "RBigToe": 0.5,
+            "RSmallToe": 0.35,
             "LHeel": 0.6,
             "RHeel": 0.6,
             # Derived

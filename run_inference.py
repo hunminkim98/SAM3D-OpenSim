@@ -57,6 +57,12 @@ def parse_args():
         default=True,
         help="Prompt once to choose a single tracked person (default: true)",
     )
+    parser.add_argument(
+        "--support-surface-mode",
+        choices=["auto", "manual_roi"],
+        default=None,
+        help="Support-surface selection mode (default: from config, usually auto)",
+    )
 
     return parser.parse_args()
 
@@ -72,12 +78,17 @@ def run_inference(
     fov: str = "moge2",
     use_mask: bool = False,
     single_person: bool = True,
+    support_surface_mode: str = None,
 ):
     """Run SAM3D Body inference and save to JSON."""
     start_time = time.time()
 
     # Load config
     config = load_config(config_path)
+    resolved_support_surface_mode = (
+        support_surface_mode
+        or config.get("processing", {}).get("support_surface_mode", "auto")
+    )
 
     # Setup output directory
     output_dir = Path(output_dir)
@@ -99,6 +110,7 @@ def run_inference(
     print(f"FOV estimator: {fov_name or 'none'}")
     print(f"Use mask: {use_mask}")
     print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")
+    print(f"Support surface: {resolved_support_surface_mode}")
     print(f"{'='*60}\n")
 
     # Step 1: Extract frames
@@ -130,6 +142,7 @@ def run_inference(
         use_mask=use_mask,
         inference_type=config["sam3d"]["inference_type"],
         single_person=single_person,
+        support_surface_mode=resolved_support_surface_mode,
     )
 
     inference_results = sam3d.process_video(frame_paths, progress=True)
@@ -160,6 +173,8 @@ def run_inference(
                 person_data["pred_keypoints_2d"] = np.array(out["pred_keypoints_2d"]).tolist()
             if "shape_params" in out:
                 person_data["shape_params"] = np.array(out["shape_params"]).tolist()
+            if "scene_ground" in out:
+                person_data["scene_ground"] = out["scene_ground"]
 
             frame_entry["outputs"].append(person_data)
 
@@ -180,7 +195,9 @@ def run_inference(
             "video_info": video_info,
             "inference_time": time.time() - start_time,
             "single_person": single_person,
+            "support_surface_mode": resolved_support_surface_mode,
             "selection": inference_results.get("selection", {}),
+            "scene_ground": inference_results.get("scene_ground", {}),
         }, f, indent=2)
 
     elapsed = time.time() - start_time
@@ -219,6 +236,7 @@ def main():
         fov=args.fov,
         use_mask=args.use_mask,
         single_person=args.single_person,
+        support_surface_mode=args.support_surface_mode,
     )
 
 

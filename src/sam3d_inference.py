@@ -15,6 +15,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from src.moge_scene_ground import (
+    compute_output_scene_ground,
+    estimate_ground_plane_from_scene_points,
+)
+
 
 class SelectionCancelledError(RuntimeError):
     """Raised when the user aborts the first-frame person selection."""
@@ -297,6 +302,319 @@ class SAM3DInference:
             frame_idx - self.last_full_detection_frame
             >= self.tracking_refresh_interval_frames
         )
+
+    @staticmethod
+    def _prepare_preview_base(
+        image: np.ndarray,
+        max_width: int = 1600,
+        max_height: int = 900,
+    ) -> Tuple[np.ndarray, float]:
+        """Resize a preview image to a reasonable interactive window size."""
+        height, width = image.shape[:2]
+        scale = min(max_width / width, max_height / height, 1.0)
+        if scale < 1.0:
+            import cv2
+
+            preview_base = cv2.resize(
+                image,
+                (int(width * scale), int(height * scale)),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            preview_base = image.copy()
+        return preview_base, scale
+
+    @staticmethod
+    def _normalize_drag_roi(
+        start_xy: Tuple[float, float],
+        end_xy: Tuple[float, float],
+        image_shape: tuple[int, ...],
+        min_size_px: float = 12.0,
+    ) -> Optional[np.ndarray]:
+        """Convert two drag points into a valid ROI rectangle."""
+        height, width = image_shape[:2]
+        x1 = float(np.clip(min(start_xy[0], end_xy[0]), 0, width - 1))
+        y1 = float(np.clip(min(start_xy[1], end_xy[1]), 0, height - 1))
+        x2 = float(np.clip(max(start_xy[0], end_xy[0]), 0, width - 1))
+        y2 = float(np.clip(max(start_xy[1], end_xy[1]), 0, height - 1))
+        if (x2 - x1) < min_size_px or (y2 - y1) < min_size_px:
+            return None
+        return np.array([x1, y1, x2, y2], dtype=np.float32)
+
+    @staticmethod
+    def _resize_mask_for_preview(mask: np.ndarray, preview_shape: tuple[int, ...]) -> np.ndarray:
+        """Resize a boolean mask to the preview resolution."""
+        import cv2
+
+        preview_height, preview_width = preview_shape[:2]
+        resized = cv2.resize(
+            mask.astype(np.uint8),
+            (preview_width, preview_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        return resized.astype(bool)
+
+    def _build_support_surface_preview(
+        self,
+        scene_output: Dict[str, np.ndarray],
+        image_shape: tuple[int, ...],
+        roi_xyxy: np.ndarray,
+        exclude_bboxes: List[np.ndarray],
+    ) -> Dict[str, Any]:
+        """Fit a plane inside the user ROI and prepare preview metadata."""
+        plane_model = estimate_ground_plane_from_scene_points(
+            scene_output.get("points"),
+            scene_output.get("mask"),
+            image_shape,
+            exclude_bboxes=exclude_bboxes,
+            roi_xyxy=roi_xyxy,
+            mode="manual_roi",
+        )
+        if plane_model is None:
+            return {
+                "fit_valid": False,
+                "roi_xyxy": self._format_bbox(roi_xyxy),
+                "warning": "Plane fit weak. Press R to redraw or S to skip.",
+            }
+
+        plane_model["fit_valid"] = True
+        plane_model["warning"] = None
+        return plane_model
+
+    def _render_support_surface_overlay(
+        self,
+        image: np.ndarray,
+        selection_state: Dict[str, Any],
+        scale: float = 1.0,
+    ) -> np.ndarray:
+        """Render the manual support-surface ROI and preview gate."""
+        import cv2
+
+        preview = image.copy()
+        overlay = preview.copy()
+
+        current_roi = selection_state.get("roi_xyxy")
+        if selection_state.get("drag_start") is not None and selection_state.get("drag_current") is not None:
+            drag_roi = self._normalize_drag_roi(
+                selection_state["drag_start"],
+                selection_state["drag_current"],
+                selection_state.get("source_image_shape", preview.shape),
+            )
+            if drag_roi is not None:
+                current_roi = drag_roi
+
+        plane_preview = selection_state.get("plane_preview") or {}
+        inlier_mask = plane_preview.get("inlier_mask_debug")
+        candidate_mask = plane_preview.get("candidate_mask_debug")
+        if candidate_mask is not None:
+            candidate_preview = self._resize_mask_for_preview(candidate_mask, preview.shape)
+            overlay[candidate_preview] = (
+                overlay[candidate_preview] * 0.55
+                + np.array([255, 200, 0], dtype=np.float32) * 0.45
+            )
+        if inlier_mask is not None:
+            inlier_preview = self._resize_mask_for_preview(inlier_mask, preview.shape)
+            overlay[inlier_preview] = (
+                overlay[inlier_preview] * 0.35
+                + np.array([0, 220, 120], dtype=np.float32) * 0.65
+            )
+        if candidate_mask is not None or inlier_mask is not None:
+            preview = overlay.astype(np.uint8)
+
+        if current_roi is not None:
+            x1, y1, x2, y2 = (np.asarray(current_roi, dtype=np.float32) * scale).astype(int)
+            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 220, 220), 2)
+
+        title = "Select support surface ROI"
+        if selection_state.get("ui_state") == "preview":
+            title = "Preview support plane before accept"
+        cv2.putText(
+            preview,
+            title,
+            (20, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        instructions = [
+            "Draw one ROI over the treadmill deck / box top / contact surface.",
+            "Preview is mandatory before accept.",
+            "Enter: accept preview  R: redraw  S: skip to auto  Esc: fallback to auto",
+        ]
+        text_y = 72
+        for line in instructions:
+            cv2.putText(
+                preview,
+                line,
+                (20, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            text_y += 26
+
+        status_lines = [
+            f"State: {selection_state.get('ui_state', 'drawing')}",
+            f"Preview shown: {'yes' if selection_state.get('preview_shown') else 'no'}",
+            f"Accept enabled: {'yes' if selection_state.get('fit_valid') else 'no'}",
+        ]
+        if current_roi is not None:
+            roi_label = self._format_bbox(np.asarray(current_roi, dtype=np.float32))
+            status_lines.append(f"ROI: {roi_label}")
+
+        if plane_preview:
+            confidence = plane_preview.get("confidence")
+            inlier_ratio = plane_preview.get("inlier_ratio")
+            num_candidates = plane_preview.get("num_candidates")
+            if confidence is not None:
+                status_lines.append(f"Plane confidence: {float(confidence):.2f}")
+            if inlier_ratio is not None:
+                status_lines.append(f"Inlier ratio: {float(inlier_ratio):.2f}")
+            if num_candidates is not None:
+                status_lines.append(f"Valid scene points: {int(num_candidates)}")
+            if plane_preview.get("source_mode"):
+                status_lines.append(f"Mode: {plane_preview['source_mode']}")
+
+        warning = plane_preview.get("warning")
+        if warning:
+            status_lines.append(f"Warning: {warning}")
+
+        line_y = text_y + 10
+        line_color = (255, 255, 255)
+        if warning:
+            line_color = (0, 180, 255)
+        for line in status_lines:
+            cv2.putText(
+                preview,
+                line,
+                (20, line_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                line_color,
+                2,
+                cv2.LINE_AA,
+            )
+            line_y += 24
+
+        return preview
+
+    def _select_support_surface_with_gui(
+        self,
+        image: np.ndarray,
+        scene_output: Dict[str, np.ndarray],
+        outputs: List[Dict[str, Any]],
+        frame_idx: int,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Require ROI preview acceptance before finalizing a support plane."""
+        import cv2
+
+        window_name = f"Select support surface - frame {frame_idx}"
+        preview_base, scale = self._prepare_preview_base(image)
+        exclude_bboxes = [
+            bbox
+            for bbox in (self._extract_bbox(output) for output in outputs)
+            if bbox is not None
+        ]
+        selection_state: Dict[str, Any] = {
+            "source_image_shape": image.shape,
+            "drag_start": None,
+            "drag_current": None,
+            "roi_xyxy": None,
+            "plane_preview": None,
+            "fit_valid": False,
+            "preview_shown": False,
+            "accepted": False,
+            "ui_state": "drawing",
+        }
+
+        def _reset_to_drawing() -> None:
+            selection_state["drag_start"] = None
+            selection_state["drag_current"] = None
+            selection_state["roi_xyxy"] = None
+            selection_state["plane_preview"] = None
+            selection_state["fit_valid"] = False
+            selection_state["preview_shown"] = False
+            selection_state["accepted"] = False
+            selection_state["ui_state"] = "drawing"
+
+        def _finalize_preview() -> None:
+            roi_xyxy = selection_state.get("roi_xyxy")
+            if roi_xyxy is None:
+                selection_state["plane_preview"] = {
+                    "fit_valid": False,
+                    "warning": "ROI too small. Press R to redraw or S to skip.",
+                }
+                selection_state["fit_valid"] = False
+                selection_state["preview_shown"] = True
+                selection_state["ui_state"] = "preview"
+                return
+
+            plane_preview = self._build_support_surface_preview(
+                scene_output=scene_output,
+                image_shape=image.shape,
+                roi_xyxy=np.asarray(roi_xyxy, dtype=np.float32),
+                exclude_bboxes=exclude_bboxes,
+            )
+            selection_state["plane_preview"] = plane_preview
+            selection_state["fit_valid"] = bool(plane_preview.get("fit_valid", False))
+            selection_state["preview_shown"] = True
+            selection_state["ui_state"] = "preview"
+
+        def handle_mouse(event, x, y, _flags, _userdata):
+            if selection_state["ui_state"] != "drawing":
+                return
+
+            point_x = float(x) / scale
+            point_y = float(y) / scale
+
+            if event == cv2.EVENT_LBUTTONDOWN:
+                selection_state["drag_start"] = (point_x, point_y)
+                selection_state["drag_current"] = (point_x, point_y)
+            elif event == cv2.EVENT_MOUSEMOVE and selection_state["drag_start"] is not None:
+                selection_state["drag_current"] = (point_x, point_y)
+            elif event == cv2.EVENT_LBUTTONUP and selection_state["drag_start"] is not None:
+                selection_state["drag_current"] = (point_x, point_y)
+                roi_xyxy = self._normalize_drag_roi(
+                    selection_state["drag_start"],
+                    selection_state["drag_current"],
+                    image.shape,
+                )
+                selection_state["roi_xyxy"] = roi_xyxy
+                selection_state["drag_start"] = None
+                selection_state["drag_current"] = None
+                _finalize_preview()
+
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(window_name, handle_mouse)
+
+        try:
+            while True:
+                overlay = self._render_support_surface_overlay(
+                    preview_base,
+                    selection_state,
+                    scale=scale,
+                )
+                cv2.imshow(window_name, cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+                key = cv2.waitKey(50) & 0xFF
+
+                if key == 27:
+                    return None, "fallback-auto"
+                if key in (ord("s"), ord("S")):
+                    return None, "skipped"
+                if key in (ord("r"), ord("R")):
+                    _reset_to_drawing()
+                    continue
+                if key in (10, 13):
+                    if selection_state["ui_state"] == "preview" and selection_state["fit_valid"]:
+                        selection_state["accepted"] = True
+                        return selection_state["plane_preview"], "manual-roi"
+        finally:
+            cv2.destroyWindow(window_name)
 
     def _render_selection_overlay(
         self,
@@ -617,6 +935,7 @@ class SAM3DInference:
         use_mask: bool = False,
         inference_type: str = "full",
         single_person: bool = True,
+        support_surface_mode: str = "auto",
     ):
         """
         Initialize SAM3D Body inference.
@@ -637,6 +956,7 @@ class SAM3DInference:
             use_mask: Whether to use segmentation masks
             inference_type: 'full', 'body', or 'hand'
             single_person: Whether to select and track one person across the clip
+            support_surface_mode: Scene-ground support-surface selection mode
         """
         self.sam3d_root = Path(sam3d_root)
         self.requested_device = str(device).lower()
@@ -671,6 +991,26 @@ class SAM3DInference:
         self.tracking_fast_path_frames = 0
         self.tracking_refresh_frames = 0
         self.tracking_recovery_events = 0
+        self.scene_ground_enabled = bool(self.single_person and fov_name == "moge2")
+        self.support_surface_mode_requested = str(support_surface_mode or "auto")
+        self.support_surface_mode_applied = "auto"
+        self.support_surface_selection_status = (
+            "auto" if self.support_surface_mode_requested == "auto" else "pending"
+        )
+        self.support_surface_manual_confirmed = False
+        self.support_surface_source_frame_idx = None
+        self.support_surface_roi_xyxy = None
+        self.scene_ground_model: Optional[Dict[str, Any]] = None
+        self.scene_ground_attempted_frames: set[int] = set()
+        self.scene_ground_available_frames = 0
+        self.scene_fov_estimator = None
+
+        if self.support_surface_mode_requested == "manual_roi" and not self.scene_ground_enabled:
+            print(
+                "Warning: manual support-surface selection requires "
+                "single_person=true and fov=moge2. Falling back to auto."
+            )
+            self.support_surface_selection_status = "fallback-auto"
 
         self._log_device_info()
 
@@ -808,6 +1148,8 @@ class SAM3DInference:
                     path=fov_path,
                 )
                 print(f"Loaded FOV estimator: {fov_name}")
+                if fov_name == "moge2":
+                    self.scene_fov_estimator = fov_estimator
             except Exception as e:
                 print(f"Warning: Could not load FOV estimator: {e}")
 
@@ -824,6 +1166,146 @@ class SAM3DInference:
         self.faces = self.estimator.faces if hasattr(self.estimator, "faces") else None
 
         print("SAM3D Body model loaded successfully")
+
+    def _infer_moge_scene(self, image: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
+        """Run full MoGe inference for scene geometry using the already-loaded model."""
+        if self.scene_fov_estimator is None:
+            return None
+
+        moge_model = getattr(self.scene_fov_estimator, "fov_estimator", None)
+        if moge_model is None:
+            return None
+
+        input_tensor = torch.tensor(
+            image / 255.0,
+            dtype=torch.float32,
+            device=self.device,
+        ).permute(2, 0, 1)
+
+        with torch.inference_mode():
+            scene_output = moge_model.infer(input_tensor)
+
+        return {
+            key: value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else value
+            for key, value in scene_output.items()
+        }
+
+    def _ensure_scene_ground_model(
+        self,
+        image: np.ndarray,
+        outputs: List[Dict[str, Any]],
+        frame_idx: int,
+    ) -> None:
+        """Estimate the clip-level ground plane once from MoGe scene geometry."""
+        if not self.scene_ground_enabled or self.scene_ground_model is not None:
+            return
+        if frame_idx in self.scene_ground_attempted_frames:
+            return
+
+        self.scene_ground_attempted_frames.add(frame_idx)
+        scene_output = self._infer_moge_scene(image)
+        if not scene_output:
+            if self.support_surface_mode_requested == "manual_roi":
+                self.support_surface_mode_applied = "auto"
+                self.support_surface_selection_status = "fallback-auto"
+            return
+
+        candidate_bboxes = [
+            bbox
+            for bbox in (self._extract_bbox(output) for output in outputs)
+            if bbox is not None
+        ]
+
+        plane_model = None
+        if self.support_surface_mode_requested == "manual_roi":
+            print(
+                "Manual support-surface mode enabled. "
+                "Draw an ROI and accept the previewed support plane to continue."
+            )
+            try:
+                manual_plane, selection_status = self._select_support_surface_with_gui(
+                    image=image,
+                    scene_output=scene_output,
+                    outputs=outputs,
+                    frame_idx=frame_idx,
+                )
+            except Exception as exc:
+                print(
+                    "Warning: Support-surface ROI UI unavailable, "
+                    f"falling back to auto plane estimation: {exc}"
+                )
+                manual_plane = None
+                selection_status = "fallback-auto"
+
+            if manual_plane is not None:
+                plane_model = manual_plane
+                self.support_surface_mode_applied = "manual_roi"
+                self.support_surface_selection_status = "accepted"
+                self.support_surface_manual_confirmed = True
+                self.support_surface_source_frame_idx = int(frame_idx)
+                self.support_surface_roi_xyxy = plane_model.get("roi_xyxy")
+                print(
+                    "Manual support surface accepted on frame "
+                    f"{frame_idx}."
+                )
+            else:
+                self.support_surface_mode_applied = "auto"
+                self.support_surface_selection_status = selection_status
+                self.support_surface_manual_confirmed = False
+                self.support_surface_source_frame_idx = int(frame_idx)
+                self.support_surface_roi_xyxy = None
+                if selection_status == "skipped":
+                    print("Support surface selection skipped, falling back to auto.")
+                elif selection_status == "fallback-auto":
+                    print("Support surface selection cancelled, falling back to auto.")
+
+        if plane_model is None:
+            plane_model = estimate_ground_plane_from_scene_points(
+                scene_output.get("points"),
+                scene_output.get("mask"),
+                image.shape,
+                exclude_bboxes=candidate_bboxes,
+                mode="auto",
+            )
+            if self.support_surface_mode_requested == "auto":
+                self.support_surface_mode_applied = "auto"
+                self.support_surface_selection_status = "auto"
+
+        if plane_model is None:
+            print(
+                f"Warning: Could not estimate MoGe ground plane from frame {frame_idx}."
+            )
+            return
+
+        plane_model["frame_idx"] = int(frame_idx)
+        self.scene_ground_model = plane_model
+        confidence = plane_model.get("confidence", 0.0)
+        inlier_ratio = plane_model.get("inlier_ratio", 0.0)
+        source_mode = plane_model.get("source_mode", "unknown")
+        if source_mode == "manual-roi":
+            print(
+                "Estimated MoGe support plane from accepted ROI on frame "
+                f"{frame_idx} (confidence={confidence:.2f}, "
+                f"inlier_ratio={inlier_ratio:.2f})"
+            )
+        else:
+            print(
+                "Estimated MoGe ground plane from frame "
+                f"{frame_idx} (confidence={confidence:.2f}, "
+                f"inlier_ratio={inlier_ratio:.2f})"
+            )
+
+    def _attach_scene_ground_to_output(self, output: Optional[Dict[str, Any]]) -> None:
+        """Annotate a selected output with per-frame foot clearance metadata."""
+        if output is None or not self.scene_ground_enabled or self.scene_ground_model is None:
+            return
+
+        scene_ground = compute_output_scene_ground(output, self.scene_ground_model)
+        if scene_ground is None:
+            return
+
+        output["scene_ground"] = scene_ground
+        self.scene_ground_available_frames += 1
 
     def process_frame(
         self,
@@ -900,6 +1382,32 @@ class SAM3DInference:
             "tracking_fast_path_frames": self.tracking_fast_path_frames,
             "tracking_refresh_frames": self.tracking_refresh_frames,
             "tracking_recovery_events": self.tracking_recovery_events,
+            "support_surface_mode_requested": self.support_surface_mode_requested,
+        }
+
+    def get_scene_ground_metadata(self) -> Dict[str, Any]:
+        """Return clip-level metadata for MoGe-assisted scene grounding."""
+        plane = self.scene_ground_model or {}
+        normal = plane.get("normal_cam")
+        if isinstance(normal, np.ndarray):
+            normal = normal.tolist()
+        return {
+            "enabled": self.scene_ground_enabled,
+            "available": self.scene_ground_model is not None,
+            "source_frame_idx": plane.get("frame_idx"),
+            "normal_cam": normal,
+            "offset_cam": plane.get("offset_cam"),
+            "confidence": plane.get("confidence"),
+            "inlier_ratio": plane.get("inlier_ratio"),
+            "residual_median": plane.get("residual_median"),
+            "available_frames": self.scene_ground_available_frames,
+            "support_surface_mode_requested": self.support_surface_mode_requested,
+            "support_surface_mode_applied": self.support_surface_mode_applied,
+            "support_surface_selection_status": self.support_surface_selection_status,
+            "support_surface_manual_confirmed": self.support_surface_manual_confirmed,
+            "support_surface_source_frame_idx": self.support_surface_source_frame_idx,
+            "support_surface_roi_xyxy": self.support_surface_roi_xyxy,
+            "source_mode": plane.get("source_mode"),
         }
 
     def _resolve_selected_output_from_full_detection(
@@ -1066,6 +1574,10 @@ class SAM3DInference:
                     postfix = f"people={len(outputs)}"
                 iterator.set_postfix_str(postfix, refresh=False)
 
+            if self.single_person and selected_output is not None:
+                self._ensure_scene_ground_model(image, outputs, idx)
+                self._attach_scene_ground_to_output(selected_output)
+
             all_outputs.append(
                 {
                     "frame_idx": idx,
@@ -1082,6 +1594,7 @@ class SAM3DInference:
             "frames": all_outputs,
             "num_frames": len(all_outputs),
             "selection": self.get_selection_metadata(),
+            "scene_ground": self.get_scene_ground_metadata(),
         }
 
     def extract_keypoints_3d(

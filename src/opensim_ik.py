@@ -8,8 +8,15 @@ using OpenSim/Pose2Sim to compute joint angles from marker data.
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
+
+from src.opensim_marker_spec import (
+    build_ik_taskset_xml,
+    format_lower_body_marker_summary,
+    get_runtime_ik_marker_specs,
+)
+from src.post_ik_foot_snap import apply_post_ik_foot_snap
 
 
 class OpenSimIK:
@@ -53,7 +60,8 @@ class OpenSimIK:
         output_dir: str,
         subject_height: float = 1.75,
         subject_mass: float = 70.0,
-    ) -> Dict[str, str]:
+        post_ik_foot_snap_mode: str = "off",
+    ) -> Dict[str, Any]:
         """
         Run inverse kinematics on marker data.
 
@@ -75,11 +83,11 @@ class OpenSimIK:
 
         if self.use_pose2sim:
             return self._run_pose2sim_ik(
-                trc_path, output_dir, subject_height, subject_mass
+                trc_path, output_dir, subject_height, subject_mass, post_ik_foot_snap_mode
             )
         else:
             return self._run_opensim_ik(
-                trc_path, output_dir, subject_height, subject_mass
+                trc_path, output_dir, subject_height, subject_mass, post_ik_foot_snap_mode
             )
 
     def _run_pose2sim_ik(
@@ -88,7 +96,8 @@ class OpenSimIK:
         output_dir: Path,
         subject_height: float,
         subject_mass: float,
-    ) -> Dict[str, str]:
+        post_ik_foot_snap_mode: str = "off",
+    ) -> Dict[str, Any]:
         """Run IK using Pose2Sim."""
         try:
             from pose2sim import Pose2Sim
@@ -96,7 +105,7 @@ class OpenSimIK:
         except ImportError:
             print("Pose2Sim not found, falling back to direct OpenSim IK")
             return self._run_opensim_ik(
-                trc_path, output_dir, subject_height, subject_mass
+                trc_path, output_dir, subject_height, subject_mass, post_ik_foot_snap_mode
             )
 
         # Create Pose2Sim session directory structure
@@ -135,7 +144,7 @@ class OpenSimIK:
         except Exception as e:
             print(f"Pose2Sim IK failed: {e}")
             return self._run_opensim_ik(
-                trc_path, output_dir, subject_height, subject_mass
+                trc_path, output_dir, subject_height, subject_mass, post_ik_foot_snap_mode
             )
 
     def _run_opensim_ik(
@@ -144,7 +153,8 @@ class OpenSimIK:
         output_dir: Path,
         subject_height: float,
         subject_mass: float,
-    ) -> Dict[str, str]:
+        post_ik_foot_snap_mode: str = "off",
+    ) -> Dict[str, Any]:
         """Run IK using direct OpenSim API."""
         try:
             import opensim as osim
@@ -162,39 +172,99 @@ class OpenSimIK:
         scaled_model_path = output_dir / f"{self.model_path.stem}_scaled.osim"
         self._scale_model(model, subject_height, subject_mass, scaled_model_path)
 
-        # Load scaled model
+        # Load scaled model and attach runtime markers.
         scaled_model = osim.Model(str(scaled_model_path))
         scaled_model.initSystem()
+
+        marker_specs = get_runtime_ik_marker_specs(
+            markers_xml_path=self.markers_xml_path
+        )
+        print(f"IK lower-body markers: {format_lower_body_marker_summary(marker_specs)}")
+        print(
+            "Configured IK foot markers: "
+            + ", ".join(
+                f'{spec["name"]}={float(spec["weight"]):.2f}'
+                for spec in marker_specs
+                if spec["name"] in ("LBigToe", "LSmallToe", "LHeel", "RBigToe", "RSmallToe", "RHeel")
+            )
+        )
+
+        for spec in marker_specs:
+            marker_name = str(spec["name"])
+            body_name = str(spec["body"])
+            x, y, z = spec["location"]
+            try:
+                body = scaled_model.getBodySet().get(body_name)
+                marker = osim.Marker()
+                marker.setName(marker_name)
+                marker.setParentFrame(body)
+                marker.set_location(osim.Vec3(float(x), float(y), float(z)))
+                scaled_model.addMarker(marker)
+            except Exception as exc:
+                print(f"Warning: Could not add {marker_name}: {exc}")
+
+        scaled_model.finalizeConnections()
+        scaled_model.initSystem()
+
+        model_with_markers_path = output_dir / f"{scaled_model_path.stem}_with_markers.osim"
+        scaled_model.printToXML(str(model_with_markers_path))
+
+        marker_tasks_path = output_dir / "ik_markers.xml"
+        marker_tasks_path.write_text(
+            build_ik_taskset_xml(marker_specs),
+            encoding="utf-8",
+        )
 
         # Get time range from TRC
         marker_data = osim.MarkerData(str(trc_path))
         start_time = marker_data.getStartFrameTime()
         end_time = marker_data.getLastFrameTime()
 
-        # Create IK tool
-        ik_tool = osim.InverseKinematicsTool()
-        ik_tool.setModel(scaled_model)
-        ik_tool.setMarkerDataFileName(str(trc_path))
-        ik_tool.setStartTime(start_time)
-        ik_tool.setEndTime(end_time)
-        ik_tool.set_accuracy(self.accuracy)
-
-        # Output file
         mot_path = output_dir / f"{trc_path.stem}.mot"
-        ik_tool.setOutputMotionFileName(str(mot_path))
-
-        # Create and save IK setup
         ik_setup_path = output_dir / "ik_setup.xml"
-        ik_tool.printToXML(str(ik_setup_path))
+        ik_setup_xml = '<?xml version="1.0" encoding="UTF-8" ?>\n'
+        ik_setup_xml += '<OpenSimDocument Version="40000">\n'
+        ik_setup_xml += '    <InverseKinematicsTool name="ik_tool">\n'
+        ik_setup_xml += f'        <model_file>{str(model_with_markers_path)}</model_file>\n'
+        ik_setup_xml += '        <constraint_weight>20</constraint_weight>\n'
+        ik_setup_xml += f'        <accuracy>{self.accuracy}</accuracy>\n'
+        ik_setup_xml += f'        <marker_file>{str(trc_path)}</marker_file>\n'
+        ik_setup_xml += '        <coordinate_file></coordinate_file>\n'
+        ik_setup_xml += f'        <time_range>{start_time} {end_time}</time_range>\n'
+        ik_setup_xml += f'        <output_motion_file>{str(mot_path)}</output_motion_file>\n'
+        ik_setup_xml += '        <report_errors>true</report_errors>\n'
+        ik_setup_xml += '        <report_marker_locations>false</report_marker_locations>\n'
+        ik_setup_xml += f'        <results_directory>{str(output_dir)}</results_directory>\n'
+        ik_setup_xml += f'        <IKTaskSet file="{str(marker_tasks_path)}"/>\n'
+        ik_setup_xml += '    </InverseKinematicsTool>\n'
+        ik_setup_xml += '</OpenSimDocument>\n'
+        ik_setup_path.write_text(ik_setup_xml, encoding="utf-8")
 
-        # Run IK
         print(f"Running IK from {start_time:.3f}s to {end_time:.3f}s...")
+        ik_tool = osim.InverseKinematicsTool(str(ik_setup_path))
         ik_tool.run()
+
+        snap_report = None
+        if post_ik_foot_snap_mode != "off":
+            snap_report = apply_post_ik_foot_snap(
+                model_path=model_with_markers_path,
+                mot_path=mot_path,
+                output_dir=output_dir,
+                contact_meta_path=output_dir / "post_ik_contact_meta.json",
+                mode=post_ik_foot_snap_mode,
+            )
+            print(
+                "Post-IK foot snap: "
+                f"{snap_report.get('status')}, "
+                f"corrected_frames={snap_report.get('corrected_frames', 0)}, "
+                f"max_drop={snap_report.get('max_applied_drop_m', 0.0):.4f} m"
+            )
 
         return {
             "mot": str(mot_path),
-            "scaled_model": str(scaled_model_path),
+            "scaled_model": str(model_with_markers_path),
             "ik_setup": str(ik_setup_path),
+            "post_ik_snap_report": snap_report,
         }
 
     def _scale_model(

@@ -56,6 +56,18 @@ def parse_args():
         default="auto",
         help="Ground alignment strategy (default: auto)",
     )
+    parser.add_argument(
+        "--vertical-translation-mode",
+        choices=["auto", "legacy_xz_only", "hybrid_support_plane"],
+        default="auto",
+        help="Vertical translation strategy when global translation is enabled (default: auto)",
+    )
+    parser.add_argument(
+        "--post-ik-foot-snap",
+        choices=["off", "auto", "stance_only"],
+        default="off",
+        help="Postprocess MOT after IK to reduce stance-phase foot hover (default: off)",
+    )
     return parser.parse_args()
 
 
@@ -118,6 +130,8 @@ def run_export(
     person_idx: int,
     smooth_cutoff: float = 6.0,
     ground_alignment_mode: str = "auto",
+    vertical_translation_mode: str = "auto",
+    post_ik_foot_snap_mode: str = "off",
 ):
     """Export SAM3D outputs to TRC/MOT/FBX."""
     start_time = time.time()
@@ -134,6 +148,8 @@ def run_export(
     print(f"Subject: height={subject_height}m, mass={subject_mass}kg")
     print(f"Global translation: {'ENABLED' if global_translation else 'disabled'}")
     print(f"Ground alignment: {ground_alignment_mode}")
+    print(f"Vertical translation: {vertical_translation_mode}")
+    print(f"Post-IK foot snap: {post_ik_foot_snap_mode}")
     print(f"{'='*60}\n")
 
     # Load data
@@ -142,12 +158,14 @@ def run_export(
     keypoints_3d, cam_translations, focal_lengths, valid_frames = extract_keypoints_and_cam(data, person_idx)
     print(f"  Loaded {len(data)} frames, {np.sum(valid_frames)} valid detections")
 
-    # Try to get FPS from metadata
+    # Try to get FPS and clip-level scene-ground metadata from metadata
     meta_path = json_path.parent / "inference_meta.json"
+    meta = {}
+    if meta_path.exists():
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
     if fps is None:
-        if meta_path.exists():
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
+        if meta:
             fps = meta.get("fps", 30.0)
             print(f"  FPS from metadata: {fps}")
         else:
@@ -158,12 +176,32 @@ def run_export(
     print("\n[2/5] Post-processing keypoints...")
     from src.post_processing import PostProcessor
     from src.coordinate_transform import CoordinateTransformer
+    from src.moge_scene_ground import extract_scene_ground_arrays_from_json
+    from src.post_ik_foot_snap import build_post_ik_contact_meta
 
     use_smoothing = smooth_cutoff > 0
     if use_smoothing:
         print(f"  Smoothing enabled: {smooth_cutoff} Hz cutoff")
     post_processor = PostProcessor(smooth_filter=use_smoothing, filter_cutoff=smooth_cutoff, normalize_bones=True)
     keypoints_processed = post_processor.process(keypoints_3d, fps=fps, subject_height=subject_height)
+    scene_ground_data = extract_scene_ground_arrays_from_json(data, person_idx=person_idx)
+    clip_scene_ground = meta.get("scene_ground", {}) if meta else {}
+    if clip_scene_ground:
+        scene_ground_data.update(
+            {
+                "normal_cam": clip_scene_ground.get("normal_cam"),
+                "offset_cam": clip_scene_ground.get("offset_cam"),
+                "clip_plane_confidence": clip_scene_ground.get("confidence"),
+                "clip_plane_inlier_ratio": clip_scene_ground.get("inlier_ratio"),
+                "support_surface_mode_applied": clip_scene_ground.get("support_surface_mode_applied"),
+                "support_surface_selection_status": clip_scene_ground.get("support_surface_selection_status"),
+            }
+        )
+    if scene_ground_data.get("available"):
+        print(
+            "  Loaded MoGe scene-ground hints "
+            f"({int(np.sum(scene_ground_data['valid_frames']))} frames)"
+        )
 
     # Transform coordinates
     transformer = CoordinateTransformer(subject_height=subject_height, units="mm")
@@ -178,15 +216,48 @@ def run_export(
         align_to_ground=True,
         apply_global_translation=global_translation,
         ground_alignment_mode=ground_alignment_mode,
+        scene_ground_data=scene_ground_data,
+        vertical_translation_mode=vertical_translation_mode,
     )
     ground_alignment_info = transformer.get_last_ground_alignment_info()
-    print(
+    ground_alignment_message = (
         "  Ground alignment applied: "
         f"{ground_alignment_info.get('applied_mode')} "
         f"(contact_frames={ground_alignment_info.get('contact_frames')}, "
         f"flight_frames={ground_alignment_info.get('flight_frames')})"
     )
+    if ground_alignment_info.get("scene_ground_used"):
+        ground_alignment_message += (
+            f", scene_ground_fused_frames="
+            f"{ground_alignment_info.get('scene_ground_fused_frames')}"
+        )
+    ground_alignment_message += (
+        f", vertical_mode={ground_alignment_info.get('vertical_mode')}"
+        f", vertical_confident_frames={ground_alignment_info.get('vertical_confident_frames')}"
+    )
+    if ground_alignment_info.get("manual_plane_anchor_active"):
+        ground_alignment_message += (
+            ", manual_anchor=on"
+            f", manual_bias_l={ground_alignment_info.get('manual_plane_left_bias_m'):.3f}"
+            f", manual_bias_r={ground_alignment_info.get('manual_plane_right_bias_m'):.3f}"
+        )
+    elif ground_alignment_info.get("manual_plane_fallback_reason"):
+        ground_alignment_message += (
+            f", manual_anchor=off"
+            f", manual_reason={ground_alignment_info.get('manual_plane_fallback_reason')}"
+        )
+    print(ground_alignment_message)
     print("  Coordinate transformation complete")
+
+    post_ik_contact_meta = build_post_ik_contact_meta(
+        transformer.get_last_contact_data(),
+        ground_alignment_info,
+        fps=fps,
+    )
+    post_ik_contact_meta_path = output_dir / "post_ik_contact_meta.json"
+    with open(post_ik_contact_meta_path, "w", encoding="utf-8") as handle:
+        json.dump(post_ik_contact_meta, handle, indent=2)
+    print(f"  Saved post-IK contact meta: {post_ik_contact_meta_path}")
 
     # Convert to OpenSim markers
     print("\n[3/5] Converting to OpenSim markers...")
@@ -215,7 +286,13 @@ def run_export(
     # Run IK
     if not skip_ik:
         print("\n[5/5] Running OpenSim IK...")
-        mot_path = run_opensim_ik(trc_path, output_dir, subject_height, subject_mass)
+        mot_path = run_opensim_ik(
+            trc_path,
+            output_dir,
+            subject_height,
+            subject_mass,
+            post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        )
         results["mot"] = mot_path
     else:
         print("\n[5/5] Skipping OpenSim IK")
@@ -241,9 +318,20 @@ def run_export(
     return results
 
 
-def run_opensim_ik(trc_path: Path, output_dir: Path, height: float, mass: float):
+def run_opensim_ik(
+    trc_path: Path,
+    output_dir: Path,
+    height: float,
+    mass: float,
+    post_ik_foot_snap_mode: str = "off",
+):
     """Run OpenSim IK using Pose2Sim environment."""
     import subprocess
+    from src.opensim_marker_spec import (
+        build_ik_taskset_xml,
+        format_lower_body_marker_summary,
+        get_runtime_ik_marker_specs,
+    )
 
     opensim_python = require_conda_env_python(
         "Pose2Sim",
@@ -256,16 +344,26 @@ def run_opensim_ik(trc_path: Path, output_dir: Path, height: float, mass: float)
 
     trc_path = Path(trc_path).resolve()
     output_dir = Path(output_dir).resolve()
+    marker_specs = get_runtime_ik_marker_specs(PROJECT_ROOT)
+    marker_specs_json = json.dumps(marker_specs)
+    marker_task_xml = build_ik_taskset_xml(marker_specs)
+
+    print(f"  IK lower-body markers: {format_lower_body_marker_summary(marker_specs)}")
 
     # Create IK script
     ik_script = '''
 import sys
+import json
 from pathlib import Path
 import opensim as osim
 
+project_root = Path(r"{project_root}")
 trc_path = Path(r"{trc_path}")
 output_dir = Path(r"{output_dir}")
 pose2sim_setup = Path(r"{pose2sim_setup}")
+marker_specs = json.loads(r"""{marker_specs_json}""")
+marker_task_xml = r"""{marker_task_xml}"""
+post_ik_foot_snap_mode = r"{post_ik_foot_snap_mode}"
 
 model_path = pose2sim_setup / "Model_Pose2Sim_simple.osim"
 
@@ -280,49 +378,24 @@ def get_trc_time_range(trc_file):
 time_range = get_trc_time_range(str(trc_path))
 stem = trc_path.stem
 mot_path = output_dir / f"{{stem}}_ik.mot"
+marker_set_file = output_dir / f"{{stem}}_ik_markers.xml"
+setup_file = output_dir / f"{{stem}}_ik_setup.xml"
 
-MARKER_WEIGHTS = [
-    # Head/face - moderate weight to balance spine orientation
-    ("Nose", 0.35), ("LEar", 0.3), ("REar", 0.3),
-    # Torso - high weight for stable spine orientation
-    ("Neck", 1.0), ("LShoulder", 1.0), ("RShoulder", 1.0),
-    ("LElbow", 1.0), ("RElbow", 1.0), ("LWrist", 1.0), ("RWrist", 1.0),
-    # Hand markers for forearm rotation
-    ("LIndex3", 0.6), ("RIndex3", 0.6),
-    ("LMiddleTip", 0.5), ("RMiddleTip", 0.5),
-    # Lower body
-    ("LHip", 1.0), ("RHip", 1.0), ("LKnee", 1.0), ("RKnee", 1.0),
-    ("LAnkle", 1.0), ("RAnkle", 1.0),
-]
-
-COCO17_MARKERS = [
-    ("Nose", "head", 0.10, 0.013, 0.0),
-    ("LEar", "head", -0.02, 0.015, -0.075),
-    ("REar", "head", -0.02, 0.015, 0.075),
-    ("Neck", "torso", -0.0127516, 0.366307, -0.000509),
-    ("LShoulder", "torso", -0.0127516, 0.366307, -0.201574),
-    ("RShoulder", "torso", -0.0127516, 0.366307, 0.201574),
-    ("LElbow", "humerus_l", 0.025, -0.297955, 0.008738),
-    ("RElbow", "humerus_r", 0.025, -0.297955, -0.008738),
-    ("LWrist", "radius_l", -0.000174, -0.235096, -0.009744),
-    ("RWrist", "radius_r", -0.000174, -0.235096, 0.009744),
-    # Hand markers for forearm rotation
-    ("LIndex3", "radius_l", 0.02, -0.32, -0.03),
-    ("RIndex3", "radius_r", 0.02, -0.32, 0.03),
-    ("LMiddleTip", "radius_l", 0.02, -0.42, -0.01),
-    ("RMiddleTip", "radius_r", 0.02, -0.42, 0.01),
-    # Lower body
-    ("LHip", "pelvis", -0.063927, -0.081343, -0.105406),
-    ("RHip", "pelvis", -0.063927, -0.081343, 0.105406),
-    ("LKnee", "femur_l", -0.005410, -0.386132, -0.005111),
-    ("RKnee", "femur_r", -0.005410, -0.386132, 0.005111),
-    ("LAnkle", "tibia_l", -0.000286, -0.40805, -0.014960),
-    ("RAnkle", "tibia_r", -0.000286, -0.40805, 0.014960),
-]
+print(
+    "Configured IK foot markers: "
+    + ", ".join(
+        f"{{spec['name']}}={{spec['weight']:.2f}}"
+        for spec in marker_specs
+        if spec["name"] in ("LBigToe", "LSmallToe", "LHeel", "RBigToe", "RSmallToe", "RHeel")
+    )
+)
 
 model = osim.Model(str(model_path))
-for marker_name, body_name, x, y, z in COCO17_MARKERS:
+for spec in marker_specs:
     try:
+        marker_name = spec["name"]
+        body_name = spec["body"]
+        x, y, z = spec["location"]
         body = model.getBodySet().get(body_name)
         marker = osim.Marker()
         marker.setName(marker_name)
@@ -335,24 +408,66 @@ for marker_name, body_name, x, y, z in COCO17_MARKERS:
 model.finalizeConnections()
 model.initSystem()
 
-model_path_out = output_dir / f"{{stem}}_model.osim"
-model.printToXML(str(model_path_out))
+model_with_markers_path = output_dir / f"{{stem}}_model.osim"
+model.printToXML(str(model_with_markers_path))
 
-ik_tool = osim.InverseKinematicsTool()
-ik_tool.setModel(model)
-ik_tool.setMarkerDataFileName(str(trc_path))
-ik_tool.setStartTime(time_range[0])
-ik_tool.setEndTime(time_range[1])
-ik_tool.setOutputMotionFileName(str(mot_path))
-ik_tool.setResultsDir(str(output_dir))
+with open(marker_set_file, 'w') as f:
+    f.write(marker_task_xml)
+
+ik_setup_xml = '<?xml version="1.0" encoding="UTF-8" ?>\\n'
+ik_setup_xml += '<OpenSimDocument Version="40000">\\n'
+ik_setup_xml += '    <InverseKinematicsTool name="ik_tool">\\n'
+ik_setup_xml += f'        <model_file>{{str(model_with_markers_path)}}</model_file>\\n'
+ik_setup_xml += '        <constraint_weight>20</constraint_weight>\\n'
+ik_setup_xml += '        <accuracy>1e-5</accuracy>\\n'
+ik_setup_xml += f'        <marker_file>{{str(trc_path)}}</marker_file>\\n'
+ik_setup_xml += '        <coordinate_file></coordinate_file>\\n'
+ik_setup_xml += f'        <time_range>{{time_range[0]}} {{time_range[1]}}</time_range>\\n'
+ik_setup_xml += f'        <output_motion_file>{{str(mot_path)}}</output_motion_file>\\n'
+ik_setup_xml += '        <report_errors>true</report_errors>\\n'
+ik_setup_xml += '        <report_marker_locations>false</report_marker_locations>\\n'
+ik_setup_xml += f'        <results_directory>{{str(output_dir)}}</results_directory>\\n'
+ik_setup_xml += f'        <IKTaskSet file="{{str(marker_set_file)}}"/>\\n'
+ik_setup_xml += '    </InverseKinematicsTool>\\n'
+ik_setup_xml += '</OpenSimDocument>\\n'
+
+with open(setup_file, 'w') as f:
+    f.write(ik_setup_xml)
 
 try:
+    ik_tool = osim.InverseKinematicsTool(str(setup_file))
     ik_tool.run()
     print(f"SUCCESS: {{mot_path}}")
 except Exception as e:
     print(f"ERROR: {{e}}")
     raise
-'''.format(trc_path=trc_path, output_dir=output_dir, pose2sim_setup=pose2sim_setup)
+
+if post_ik_foot_snap_mode != "off":
+    sys.path.insert(0, str(project_root))
+    from src.post_ik_foot_snap import apply_post_ik_foot_snap
+
+    snap_report = apply_post_ik_foot_snap(
+        model_path=model_with_markers_path,
+        mot_path=mot_path,
+        output_dir=output_dir,
+        contact_meta_path=output_dir / "post_ik_contact_meta.json",
+        mode=post_ik_foot_snap_mode,
+    )
+    print(
+        "Post-IK foot snap: "
+        f"{{snap_report.get('status')}}"
+        f", corrected_frames={{snap_report.get('corrected_frames', 0)}}"
+        f", max_drop={{snap_report.get('max_applied_drop_m', 0.0):.4f}} m"
+    )
+'''.format(
+        project_root=PROJECT_ROOT,
+        trc_path=trc_path,
+        output_dir=output_dir,
+        pose2sim_setup=pose2sim_setup,
+        marker_specs_json=marker_specs_json,
+        marker_task_xml=marker_task_xml,
+        post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+    )
 
     ik_script_path = output_dir / "_run_ik.py"
     with open(ik_script_path, 'w') as f:
@@ -447,6 +562,8 @@ def main():
         person_idx=args.person,
         smooth_cutoff=args.smooth,
         ground_alignment_mode=args.ground_alignment_mode,
+        vertical_translation_mode=args.vertical_translation_mode,
+        post_ik_foot_snap_mode=args.post_ik_foot_snap,
     )
 
 
