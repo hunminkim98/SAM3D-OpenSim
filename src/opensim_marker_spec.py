@@ -11,7 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 import xml.etree.ElementTree as ET
-import yaml
+
+from utils.io_utils import load_marker_mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ LOWER_BODY_MARKER_NAMES: Tuple[str, ...] = (
     *FOOT_MARKER_NAMES,
 )
 
-RUNTIME_MARKER_ORDER: Tuple[str, ...] = (
+DEFAULT_RUNTIME_MARKER_ORDER: Tuple[str, ...] = (
     "Nose",
     "LEye",
     "REye",
@@ -100,7 +101,7 @@ _FOOT_MARKER_FALLBACKS: Dict[str, Tuple[str, MarkerLocation]] = {
     "RHeel": ("calcn_r", (-0.03, 0.0, 0.0)),
 }
 
-_RUNTIME_WEIGHT_OVERRIDES: Dict[str, float] = {
+DEFAULT_RUNTIME_WEIGHT_OVERRIDES: Dict[str, float] = {
     "Nose": 0.8,
     "LEye": 0.4,
     "REye": 0.4,
@@ -132,6 +133,38 @@ def _resolve_project_root(project_root: Optional[Path | str]) -> Path:
     return Path(project_root)
 
 
+def _load_runtime_ik_config(
+    project_root: Optional[Path | str] = None,
+) -> tuple[Tuple[str, ...], Dict[str, float]]:
+    """Load runtime IK subset settings from marker_mapping.yaml when available."""
+    root = _resolve_project_root(project_root)
+    mapping_path = root / "config" / "marker_mapping.yaml"
+
+    try:
+        mapping_config = load_marker_mapping(str(mapping_path))
+    except FileNotFoundError:
+        mapping_config = {}
+
+    runtime_ik = mapping_config.get("runtime_ik", {})
+    raw_order = runtime_ik.get("marker_order", [])
+    marker_order: Tuple[str, ...]
+    if raw_order:
+        marker_order = tuple(str(name) for name in raw_order if str(name).strip())
+    else:
+        marker_order = DEFAULT_RUNTIME_MARKER_ORDER
+
+    raw_overrides = runtime_ik.get("weight_overrides", {})
+    weight_overrides: Dict[str, float] = {}
+    for marker_name, value in raw_overrides.items():
+        if isinstance(value, (int, float)):
+            weight_overrides[str(marker_name)] = float(value)
+
+    if not weight_overrides:
+        weight_overrides = DEFAULT_RUNTIME_WEIGHT_OVERRIDES.copy()
+
+    return marker_order, weight_overrides
+
+
 def _load_marker_xml_locations(markers_xml_path: Path) -> Dict[str, Tuple[str, MarkerLocation]]:
     if not markers_xml_path.exists():
         return {}
@@ -156,6 +189,24 @@ def _load_marker_xml_locations(markers_xml_path: Path) -> Dict[str, Tuple[str, M
     return locations
 
 
+def _resolve_marker_body_and_location(
+    marker_name: str,
+    xml_locations: Dict[str, Tuple[str, MarkerLocation]],
+) -> Tuple[str, MarkerLocation]:
+    if marker_name in _BASE_RUNTIME_MARKERS:
+        return _BASE_RUNTIME_MARKERS[marker_name]
+
+    if marker_name in xml_locations:
+        return xml_locations[marker_name]
+
+    if marker_name in _FOOT_MARKER_FALLBACKS:
+        return _FOOT_MARKER_FALLBACKS[marker_name]
+
+    raise KeyError(
+        f"Runtime IK marker '{marker_name}' is not defined in base markers or marker XML."
+    )
+
+
 def get_runtime_ik_marker_weights(
     project_root: Optional[Path | str] = None,
 ) -> Dict[str, float]:
@@ -163,17 +214,20 @@ def get_runtime_ik_marker_weights(
     weights: Dict[str, float] = {}
     mapping_path = root / "config" / "marker_mapping.yaml"
 
-    if mapping_path.exists():
-        with open(mapping_path, "r", encoding="utf-8") as handle:
-            mapping_config = yaml.safe_load(handle) or {}
-        raw_weights = mapping_config.get("marker_weights", {})
-        for marker_name, value in raw_weights.items():
-            if marker_name == "default_finger_weight":
-                continue
-            if isinstance(value, (int, float)):
-                weights[str(marker_name)] = float(value)
+    try:
+        mapping_config = load_marker_mapping(str(mapping_path))
+    except FileNotFoundError:
+        mapping_config = {}
 
-    weights.update(_RUNTIME_WEIGHT_OVERRIDES)
+    raw_weights = mapping_config.get("marker_weights", {})
+    for marker_name, value in raw_weights.items():
+        if marker_name == "default_finger_weight":
+            continue
+        if isinstance(value, (int, float)):
+            weights[str(marker_name)] = float(value)
+
+    _marker_order, weight_overrides = _load_runtime_ik_config(root)
+    weights.update(weight_overrides)
     return weights
 
 
@@ -182,6 +236,7 @@ def get_runtime_ik_marker_specs(
     markers_xml_path: Optional[Path | str] = None,
 ) -> List[MarkerSpec]:
     root = _resolve_project_root(project_root)
+    runtime_marker_order, _weight_overrides = _load_runtime_ik_config(root)
     weights = get_runtime_ik_marker_weights(root)
     resolved_xml_path = (
         Path(markers_xml_path)
@@ -191,13 +246,11 @@ def get_runtime_ik_marker_specs(
     xml_locations = _load_marker_xml_locations(resolved_xml_path)
 
     specs: List[MarkerSpec] = []
-    for marker_name in RUNTIME_MARKER_ORDER:
-        if marker_name in _BASE_RUNTIME_MARKERS:
-            body_name, location = _BASE_RUNTIME_MARKERS[marker_name]
-        else:
-            body_name, location = xml_locations.get(
-                marker_name, _FOOT_MARKER_FALLBACKS[marker_name]
-            )
+    for marker_name in runtime_marker_order:
+        body_name, location = _resolve_marker_body_and_location(
+            marker_name,
+            xml_locations,
+        )
 
         specs.append(
             {

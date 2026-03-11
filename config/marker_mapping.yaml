@@ -316,3 +316,58 @@ marker_weights:
 
   # Lowest weight - finger tips (very noisy)
   default_finger_weight: 0.3
+
+# Runtime IK subset and override weights used by opensim_marker_spec.py.
+runtime_ik:
+  marker_order:
+    - "Nose"
+    - "LEye"
+    - "REye"
+    - "LEar"
+    - "REar"
+    - "Neck"
+    - "LShoulder"
+    - "RShoulder"
+    - "LElbow"
+    - "RElbow"
+    - "LWrist"
+    - "RWrist"
+    - "LIndex3"
+    - "RIndex3"
+    - "LMiddleTip"
+    - "RMiddleTip"
+    - "LHip"
+    - "RHip"
+    - "LKnee"
+    - "RKnee"
+    - "LAnkle"
+    - "RAnkle"
+    - "LBigToe"
+    - "LSmallToe"
+    - "LHeel"
+    - "RBigToe"
+    - "RSmallToe"
+    - "RHeel"
+  weight_overrides:
+    Nose: 0.8
+    LEye: 0.4
+    REye: 0.4
+    LEar: 0.6
+    REar: 0.6
+    Neck: 1.0
+    LShoulder: 1.0
+    RShoulder: 1.0
+    LElbow: 1.0
+    RElbow: 1.0
+    LWrist: 1.0
+    RWrist: 1.0
+    LIndex3: 0.6
+    RIndex3: 0.6
+    LMiddleTip: 0.5
+    RMiddleTip: 0.5
+    LHip: 1.0
+    RHip: 1.0
+    LKnee: 1.0
+    RKnee: 1.0
+    LAnkle: 1.0
+    RAnkle: 1.0

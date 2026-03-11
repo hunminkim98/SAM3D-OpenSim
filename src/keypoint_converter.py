@@ -8,7 +8,8 @@ to OpenSim-compatible marker positions.
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
-import yaml
+
+from utils.io_utils import load_marker_mapping
 
 
 class KeypointConverter:
@@ -180,6 +181,30 @@ class KeypointConverter:
         61: "LPinky3",
     }
 
+    @classmethod
+    def _load_mapping_config(cls, mapping_path: Optional[str] = None) -> dict:
+        """Load marker mapping config, falling back to built-in defaults."""
+        try:
+            return load_marker_mapping(mapping_path)
+        except FileNotFoundError:
+            return {}
+
+    @classmethod
+    def _build_mhr70_names_from_config(cls, mapping_config: dict) -> List[str]:
+        raw_names = mapping_config.get("mhr70_keypoints", {})
+        if not raw_names:
+            return cls.MHR70_NAMES.copy()
+
+        normalized_names = cls.MHR70_NAMES.copy()
+        for key, value in raw_names.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(normalized_names):
+                normalized_names[index] = str(value)
+        return normalized_names
+
     def __init__(self, mapping_path: Optional[str] = None):
         """
         Initialize keypoint converter.
@@ -187,9 +212,10 @@ class KeypointConverter:
         Args:
             mapping_path: Path to custom marker mapping YAML file
         """
-        if mapping_path and Path(mapping_path).exists():
-            with open(mapping_path, "r") as f:
-                mapping_config = yaml.safe_load(f)
+        mapping_config = self._load_mapping_config(mapping_path)
+        self.mhr70_names = self._build_mhr70_names_from_config(mapping_config)
+
+        if mapping_config:
             self.opensim_names = {
                 int(k): v for k, v in mapping_config.get("opensim_markers", {}).items()
             }

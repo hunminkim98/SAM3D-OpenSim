@@ -1,154 +1,339 @@
 # SAM3D-OpenSim
 
-Convert monocular video to OpenSim motion data using SAM3D Body for 3D pose estimation.
+Convert monocular video into OpenSim-ready motion data using SAM3D Body for 3D pose estimation.
 
 ## Overview
 
-This pipeline uses [SAM3D Body](https://github.com/facebookresearch/sam-3d-body) (Meta/Facebook Research) for state-of-the-art 3D pose estimation, producing OpenSim-compatible motion files for biomechanical analysis.
+SAM3D-OpenSim takes a single video, runs SAM3D Body inference, converts the resulting MHR70 skeleton into OpenSim marker trajectories, solves inverse kinematics, and can export a rigged FBX animation.
 
-**Pipeline Flow:**
+The repository now follows a canonical two-stage pipeline:
+
+```text
+Video
+  -> run_inference.py
+     -> frames/
+     -> video_outputs.json
+     -> inference_meta.json
+  -> run_export.py
+     -> markers_*.trc
+     -> *_ik.mot
+     -> *.fbx
 ```
-Video → SAM3 Detector → SAM3D Body → MHR70 Keypoints → TRC Markers → OpenSim IK → Joint Angles (.mot)
-              ↓                              ↓                              ↓
-         MoGe2 FOV                      cam_t (global pos)           Blender → FBX Animation
-```
 
-## Features
+`run_full_pipeline.py` is a thin subprocess orchestrator over those two stages. `run_pipeline.py` is a thin in-process convenience wrapper that composes the same shared stage helpers inside one process.
 
-- **70 MHR70 keypoints** including body, hands, and feet
-- **SAM3 Detector**: State-of-the-art person detection using Segment Anything 3
-- **MoGe2 FOV Estimation**: Accurate focal length for better 3D reconstruction
-- **Global translation tracking** from cam_t for walking/running movement
-- **Per-frame ground alignment**: Feet always touch the floor
-- **Hand markers for arm rotation**: Better internal/external rotation tracking
-- **Butterworth smoothing**: Configurable low-pass filter to reduce jitter
-- **OpenSim IK** with 40 DOF using Pose2Sim model
-- **FBX export** via Blender with rigged skeleton template (includes forearm rotation)
-- **Two-stage workflow**: Separate inference (slow) from export (fast) for rapid iteration
+The root entrypoints now delegate to shared orchestration helpers:
 
-## Performance
+- `src/pipeline_runner.py` for in-process Stage 1 + Stage 2 composition
+- `src/subprocess_pipeline_runner.py` for multi-environment subprocess orchestration
+- `src/pipeline_runtime_common.py` for shared runtime option resolution, output-directory handling, and summary formatting
 
-Tested on NVIDIA RTX GPU with 1136 frames (37.8 sec video):
+## Key Features
 
-| Stage | Time | Speed |
-|-------|------|-------|
-| SAM3D Inference | ~25 min | ~1.3 sec/frame |
-| Export (TRC/MOT/FBX) | ~10 sec | ~114 frames/sec |
-| OpenSim IK | 4 sec | ~284 frames/sec |
+- 70 MHR70 keypoints including body, hands, and feet
+- `sam3`, `vitdet`, `yolo11`, or `none` detector options
+- MoGe2 FOV estimation for improved camera geometry
+- Single-person selection and tracking enabled by default
+- Manual support-surface ROI selection for treadmill or elevated-contact scenes
+- Contact-aware ground alignment for jumps and landing-sensitive motion
+- Hybrid vertical translation that blends support-plane cues and `pred_cam_t`
+- OpenSim IK with centralized runtime foot markers including heel, big toe, and small toe
+- Optional post-IK stance-phase foot snap to reduce visible landing hover
+- Two-stage workflow for fast export iteration without re-running inference
 
-## Quick Start
+## MHR70 Keypoint Index Map
+
+The canonical 70-keypoint order is defined in [`src/keypoint_converter.py`](src/keypoint_converter.py).
+
+These are three different layers in the current pipeline:
+
+| Layer | Count | Meaning |
+|------|------:|---------|
+| Raw MHR70 keypoints | 70 | Direct SAM3D Body outputs before marker conversion |
+| Exported TRC markers | 73 | 70 direct marker names plus 3 derived markers |
+| OpenSim IK runtime markers | 28 | The subset actually used by the IK task set |
+
+The tables below show the 70 raw MHR70 keypoints and the default direct marker names used during TRC export. These tables do not mean that OpenSim IK uses all 70 markers.
+
+### Body and Feet
+
+| Index | MHR70 Name | Direct Export Marker Name |
+|------:|------------|----------------|
+| 0 | `nose` | `Nose` |
+| 1 | `left_eye` | `LEye` |
+| 2 | `right_eye` | `REye` |
+| 3 | `left_ear` | `LEar` |
+| 4 | `right_ear` | `REar` |
+| 5 | `left_shoulder` | `LShoulder` |
+| 6 | `right_shoulder` | `RShoulder` |
+| 7 | `left_elbow` | `LElbow` |
+| 8 | `right_elbow` | `RElbow` |
+| 9 | `left_hip` | `LHip` |
+| 10 | `right_hip` | `RHip` |
+| 11 | `left_knee` | `LKnee` |
+| 12 | `right_knee` | `RKnee` |
+| 13 | `left_ankle` | `LAnkle` |
+| 14 | `right_ankle` | `RAnkle` |
+| 15 | `left_big_toe` | `LBigToe` |
+| 16 | `left_small_toe` | `LSmallToe` |
+| 17 | `left_heel` | `LHeel` |
+| 18 | `right_big_toe` | `RBigToe` |
+| 19 | `right_small_toe` | `RSmallToe` |
+| 20 | `right_heel` | `RHeel` |
+
+### Right Hand
+
+| Index | MHR70 Name | Direct Export Marker Name |
+|------:|------------|----------------|
+| 21 | `right_thumb_tip` | `RThumbTip` |
+| 22 | `right_thumb_first_joint` | `RThumb1` |
+| 23 | `right_thumb_second_joint` | `RThumb2` |
+| 24 | `right_thumb_third_joint` | `RThumb3` |
+| 25 | `right_index_tip` | `RIndexTip` |
+| 26 | `right_index_first_joint` | `RIndex1` |
+| 27 | `right_index_second_joint` | `RIndex2` |
+| 28 | `right_index_third_joint` | `RIndex3` |
+| 29 | `right_middle_tip` | `RMiddleTip` |
+| 30 | `right_middle_first_joint` | `RMiddle1` |
+| 31 | `right_middle_second_joint` | `RMiddle2` |
+| 32 | `right_middle_third_joint` | `RMiddle3` |
+| 33 | `right_ring_tip` | `RRingTip` |
+| 34 | `right_ring_first_joint` | `RRing1` |
+| 35 | `right_ring_second_joint` | `RRing2` |
+| 36 | `right_ring_third_joint` | `RRing3` |
+| 37 | `right_pinky_tip` | `RPinkyTip` |
+| 38 | `right_pinky_first_joint` | `RPinky1` |
+| 39 | `right_pinky_second_joint` | `RPinky2` |
+| 40 | `right_pinky_third_joint` | `RPinky3` |
+| 41 | `right_wrist` | `RWrist` |
+
+### Left Hand
+
+| Index | MHR70 Name | Direct Export Marker Name |
+|------:|------------|----------------|
+| 42 | `left_thumb_tip` | `LThumbTip` |
+| 43 | `left_thumb_first_joint` | `LThumb1` |
+| 44 | `left_thumb_second_joint` | `LThumb2` |
+| 45 | `left_thumb_third_joint` | `LThumb3` |
+| 46 | `left_index_tip` | `LIndexTip` |
+| 47 | `left_index_first_joint` | `LIndex1` |
+| 48 | `left_index_second_joint` | `LIndex2` |
+| 49 | `left_index_third_joint` | `LIndex3` |
+| 50 | `left_middle_tip` | `LMiddleTip` |
+| 51 | `left_middle_first_joint` | `LMiddle1` |
+| 52 | `left_middle_second_joint` | `LMiddle2` |
+| 53 | `left_middle_third_joint` | `LMiddle3` |
+| 54 | `left_ring_tip` | `LRingTip` |
+| 55 | `left_ring_first_joint` | `LRing1` |
+| 56 | `left_ring_second_joint` | `LRing2` |
+| 57 | `left_ring_third_joint` | `LRing3` |
+| 58 | `left_pinky_tip` | `LPinkyTip` |
+| 59 | `left_pinky_first_joint` | `LPinky1` |
+| 60 | `left_pinky_second_joint` | `LPinky2` |
+| 61 | `left_pinky_third_joint` | `LPinky3` |
+| 62 | `left_wrist` | `LWrist` |
+
+### Extra Anatomical Landmarks
+
+| Index | MHR70 Name | Direct Export Marker Name |
+|------:|------------|----------------|
+| 63 | `left_olecranon` | `LOlecranon` |
+| 64 | `right_olecranon` | `ROlecranon` |
+| 65 | `left_cubital_fossa` | `LCubitalFossa` |
+| 66 | `right_cubital_fossa` | `RCubitalFossa` |
+| 67 | `left_acromion` | `LAcromion` |
+| 68 | `right_acromion` | `RAcromion` |
+| 69 | `neck` | `Neck` |
+
+### Derived TRC Markers
+
+The canonical export path adds three derived markers on top of the 70 direct markers:
+
+| Derived Marker | Meaning |
+|----------------|---------|
+| `PelvisCenter` | Midpoint derived from left and right hip landmarks |
+| `Thorax` | Upper-torso proxy used for OpenSim export and debugging |
+| `SpineMid` | Mid-spine proxy derived from torso landmarks |
+
+This is why the default TRC export currently writes 73 markers.
+
+### OpenSim IK Runtime Marker Subset
+
+OpenSim IK does not use all 73 exported TRC markers. The runtime task set currently uses the following 28-marker subset:
+
+| Group | Runtime IK Markers |
+|-------|--------------------|
+| Head | `Nose`, `LEye`, `REye`, `LEar`, `REar` |
+| Torso | `Neck`, `LShoulder`, `RShoulder` |
+| Arms and hands | `LElbow`, `RElbow`, `LWrist`, `RWrist`, `LIndex3`, `RIndex3`, `LMiddleTip`, `RMiddleTip` |
+| Legs | `LHip`, `RHip`, `LKnee`, `RKnee`, `LAnkle`, `RAnkle` |
+| Feet | `LBigToe`, `LSmallToe`, `LHeel`, `RBigToe`, `RSmallToe`, `RHeel` |
+
+In short:
+
+- `70` raw MHR70 keypoints come from SAM3D Body
+- `73` markers are written to the TRC export path
+- `28` markers are used by the current OpenSim IK runtime task set
+
+The default source of truth for:
+
+- direct marker names
+- derived marker definitions
+- runtime IK marker subset order
+- runtime IK weight overrides
+
+is `config/marker_mapping.yaml`.
+
+## Recommended Workflow
+
+### Full Pipeline
 
 ```bash
-conda activate sam_3d_body
-cd C:\Sam3DBodyToOpenSim
-
-# Best quality: SAM3 detector + MoGe2 FOV + global translation
 python run_full_pipeline.py --input video.mp4 --height 1.69 \
     --detector sam3 --fov moge2 --global-translation
 ```
 
-## Usage
-
-### Full Pipeline (One Command)
+### Full Pipeline With Manual Support Surface
 
 ```bash
 python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector sam3 --fov moge2 --global-translation
+    --detector sam3 --fov moge2 --global-translation \
+    --support-surface-mode manual_roi \
+    --vertical-translation-mode hybrid_support_plane \
+    --post-ik-foot-snap stance_only
 ```
 
-### Two-Stage Workflow (Recommended for Iteration)
+### Two-Stage Workflow
 
-**Stage 1: Inference** (slow, run once)
+Stage 1, slow, run once:
+
 ```bash
 python run_inference.py --input video.mp4 --detector sam3 --fov moge2
 ```
 
-**Stage 2: Export** (fast, iterate on settings)
-```bash
-python run_export.py --input output_dir/video_outputs.json --height 1.69 --global-translation
-```
-
-### CPU Mode
+Stage 2, fast, re-run as needed:
 
 ```bash
-python run_full_pipeline.py --input video.mp4 --height 1.69 --device cpu
+python run_export.py --input output_dir/video_outputs.json --height 1.69 \
+    --global-translation \
+    --ground-alignment-mode contact_aware \
+    --vertical-translation-mode hybrid_support_plane \
+    --save_graph
 ```
 
-## Arguments Reference
+### CPU Inference
 
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--input, -i` | Input video file | Required |
-| `--height` | Subject height (meters) | 1.75 |
-| `--mass` | Subject mass (kg) | 70.0 |
-| `--output, -o` | Output directory | Auto |
-| `--detector` | Human detector: vitdet, yolo11, **sam3**, none | vitdet |
-| `--fov` | FOV estimator: **moge2**, none | moge2 |
-| `--global-translation` | Track global movement from cam_t | false |
-| `--smooth` | Smoothing cutoff frequency in Hz (0 to disable) | 6.0 |
-| `--skip-ik` | Skip OpenSim IK | false |
-| `--skip-fbx` | Skip FBX export | false |
+`run_full_pipeline.py` does not expose a `--device` flag. For CPU inference, use the two-stage workflow:
+
+```bash
+python run_inference.py --input video.mp4 --device cpu
+python run_export.py --input output_dir/video_outputs.json --height 1.69
+```
+
+## Common Flags
+
+### Inference / Full Pipeline
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `--input, -i` | Input video path | Required |
+| `--height` | Subject height in meters | `1.75` |
+| `--mass` | Subject mass in kilograms | `70.0` |
+| `--output, -o` | Output directory | auto-generated |
+| `--fps` | Target processing FPS | `30.0` |
+| `--detector` | `vitdet`, `yolo11`, `sam3`, `none` | `vitdet` |
+| `--segmentor` | `sam2`, `none` | `none` |
+| `--fov` | `moge2`, `none` | `moge2` |
+| `--single_person` | Prompt once and track a single person | `true` |
+| `--support-surface-mode` | `auto`, `manual_roi` | config default (`auto`) |
+| `--use-mask` | Use segmentation masks when available | `false` |
+
+### Export / Motion Reconstruction
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `--global-translation` | Apply `cam_t` translation | `false` |
+| `--smooth` | Butterworth cutoff frequency in Hz | `6.0` |
+| `--ground-alignment-mode` | `auto`, `contact_aware`, `per_frame_snap` | `auto` |
+| `--vertical-translation-mode` | `auto`, `legacy_xz_only`, `hybrid_support_plane` | `auto` |
+| `--post-ik-foot-snap` | `off`, `auto`, `stance_only` | `off` |
+| `--save_graph` | Save TRC coordinate and MOT angle plots under `graphs/` | `false` |
+| `--skip-ik` | Skip OpenSim IK | `false` |
+| `--skip-fbx` | Skip Blender FBX export | `false` |
 
 ## Output Files
 
-```
-output_YYYYMMDD_HHMMSS_videoname/
-├── frames/                           # Extracted video frames
-├── video_outputs.json                # SAM3D format (keypoints, cam_t, focal_length)
-├── inference_meta.json               # Video metadata (FPS, dimensions)
-├── markers_videoname.trc             # OpenSim marker trajectories (22 markers)
-├── markers_videoname_ik.mot          # Joint angles (40 DOF)
-├── markers_videoname_model.osim      # OpenSim model with markers
-└── markers_videoname.fbx             # Animated skeleton for 3D software
+Typical output directory:
+
+```text
+output_YYYYMMDD_HHMMSS_<video>/
+├── frames/                        # Extracted video frames
+├── video_outputs.json             # Canonical SAM3D per-frame outputs
+├── inference_meta.json            # FPS, video info, selection, scene-ground metadata
+├── post_ik_contact_meta.json      # Stance/flight metadata used by post-IK correction
+├── markers_*.trc                  # OpenSim marker trajectories
+├── *_ik.mot                       # OpenSim IK result
+├── *_ik_raw.mot                   # Raw IK result when post-IK foot snap is enabled
+├── *_foot_snap_report.json        # Post-IK correction report when enabled
+├── *_model.osim                   # OpenSim model with runtime markers
+├── graphs/coords/*.png            # TRC marker coordinate plots when --save_graph is enabled
+├── graphs/angles/*.png            # MOT angle plots when --save_graph is enabled and IK runs
+└── *.fbx                          # Animated skeleton export
 ```
 
-## Pipeline Stages
+Notes:
 
-1. **Frame Extraction**: Video → PNG frames at target FPS
-2. **Person Detection**: SAM3/VitDet bounding box detection
-3. **FOV Estimation**: MoGe2 focal length estimation (first frame)
-4. **3D Pose Estimation**: SAM3D Body → 70 MHR70 keypoints + cam_t
-5. **Post-Processing**: Smoothing, bone normalization, coordinate transform
-6. **TRC Export**: OpenSim-compatible marker trajectories
-7. **Inverse Kinematics**: OpenSim IK → 40 DOF joint angles
-8. **FBX Export**: Blender animated skeleton
+- `run_inference.py` writes `video_outputs.json` and `inference_meta.json`
+- `run_export.py` consumes those files and writes the downstream artifacts
+- `run_pipeline.py` may additionally write `keypoints_raw.json` and `processing_report.json`
+- `run_full_pipeline.py` stays a thin subprocess wrapper and does not add extra in-process reporting artifacts
+- with `--save_graph`, coordinate plots are written after TRC export; angle plots are written only when IK produces a MOT file
+
+## Practical Guidance
+
+- Use `--detector sam3 --fov moge2` for the best overall Stage 1 quality.
+- Use `--global-translation` only when subject motion through space matters.
+- Use `--support-surface-mode manual_roi` when the contact plane is not the room floor, for example treadmill, box, or platform scenes.
+- Use `--ground-alignment-mode contact_aware` for jumps or flight phases.
+- Use `--vertical-translation-mode hybrid_support_plane` when support-surface grounding is available.
+- Use `--post-ik-foot-snap stance_only` if the IK result still shows visible stance-phase hover.
+
+## Environments
+
+| Environment | Purpose |
+|-------------|---------|
+| `sam_3d_body` | SAM3D Body inference, SAM3, and MoGe2 |
+| `Pose2Sim` | OpenSim inverse kinematics and post-IK MOT correction |
+
+## External Dependencies
+
+- SAM3D Body
+- SAM3
+- MoGe2
+- OpenSim via Pose2Sim
+- Blender 4.5+ or any auto-detected Blender executable under `C:\Program Files\Blender Foundation\Blender *\blender.exe`
+
+## Verification
+
+After CLI or orchestration changes, run:
+
+```bash
+python run_inference.py --help
+python run_export.py --help
+python run_full_pipeline.py --help
+```
+
+For export-stage changes, the fastest smoke test is:
+
+```bash
+python run_export.py --input output_dir/video_outputs.json --height 1.69 --skip-ik --skip-fbx
+```
+
+`run_pipeline.py --visualize` is currently a deprecated compatibility flag and does not generate extra outputs.
 
 ## Documentation
 
-- [SETUP.md](SETUP.md) - Installation guide
-- [HOW_TO_RUN.md](HOW_TO_RUN.md) - Usage examples
-- [DOCUMENTATION.md](DOCUMENTATION.md) - Technical reference
-- [docs/FULL_DOCUMENTATION.md](docs/FULL_DOCUMENTATION.md) - Complete documentation
-
-## Requirements
-
-- Windows 10/11
-- Python 3.11
-- CUDA-capable GPU (8GB+ VRAM recommended)
-- PyTorch 2.0+
-- SAM3D Body
-- SAM3 (Segment Anything 3)
-- MoGe2 (Monocular Geometry Estimation)
-- OpenSim 4.5+ (via Pose2Sim)
-- Blender 5.0+ (for FBX export)
-
-## Project Structure
-
-```
-SAM3D-OpenSim/
-├── config/                    # Configuration files
-├── models/                    # OpenSim model files
-├── src/                       # Source modules
-├── utils/                     # Utility functions
-├── scripts/                   # Blender export script
-├── docs/                      # Documentation
-├── run_inference.py           # Stage 1: SAM3D inference
-├── run_export.py              # Stage 2: Export to TRC/MOT/FBX
-├── run_pipeline.py            # Combined TRC pipeline
-├── run_full_pipeline.py       # Full pipeline (TRC + IK + FBX)
-├── test_imports.py            # Verify installation
-└── requirements.txt           # Python dependencies
-```
+- [Full Documentation](docs/FULL_DOCUMENTATION.md)
 
 ## License
 
@@ -156,8 +341,7 @@ This project is provided for research and educational purposes.
 
 ## Acknowledgments
 
-- **SAM3D Body**: Meta/Facebook Research - https://github.com/facebookresearch/sam-3d-body
-- **SAM3**: Meta/Facebook Research - https://github.com/facebookresearch/sam3
-- **MoGe2**: Monocular Geometry Estimation
-- **Pose2Sim**: https://github.com/perfanalytics/pose2sim
-- **OpenSim**: https://opensim.stanford.edu/
+- [SAM3D Body](https://github.com/facebookresearch/sam-3d-body)
+- [SAM3](https://github.com/facebookresearch/sam3)
+- [Pose2Sim](https://github.com/perfanalytics/pose2sim)
+- [OpenSim](https://opensim.stanford.edu/)

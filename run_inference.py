@@ -17,54 +17,30 @@ Output:
 """
 
 import argparse
-import json
 import sys
-import time
 from pathlib import Path
-
-import numpy as np
 
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.video_utils import extract_frames, get_video_info
-from utils.io_utils import load_config, get_output_dir
-from utils.cli_utils import str_to_bool
+from src.inference_stage import run_inference_stage
+from utils.io_utils import get_output_dir
+from utils.pipeline_options import add_inference_runtime_args, load_cli_defaults_from_argv
 
 
-def parse_args():
+def parse_args(argv=None):
+    defaults = load_cli_defaults_from_argv(argv, include_config=True)
     parser = argparse.ArgumentParser(description="SAM3D Body Inference")
     parser.add_argument("--input", "-i", required=True, help="Input video file")
     parser.add_argument("--output", "-o", help="Output directory (default: auto)")
-    parser.add_argument("--fps", type=float, default=30.0, help="Target FPS")
-    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--config", help="Config file path")
-
-    # SAM3D Body component options
-    parser.add_argument("--detector", default="vitdet", choices=["vitdet", "yolo11", "sam3", "none"],
-                        help="Human detector: vitdet, yolo11, sam3, or none (default: vitdet)")
-    parser.add_argument("--segmentor", default=None, choices=["sam2", "none"],
-                        help="Segmentor: sam2 or none (default: none)")
-    parser.add_argument("--fov", default="moge2", choices=["moge2", "none"],
-                        help="FOV estimator: moge2 or none (default: moge2)")
-    parser.add_argument("--use-mask", action="store_true",
-                        help="Use segmentation mask (requires segmentor)")
-    parser.add_argument(
-        "--single_person",
-        type=str_to_bool,
-        nargs="?",
-        const=True,
-        default=True,
-        help="Prompt once to choose a single tracked person (default: true)",
-    )
-    parser.add_argument(
-        "--support-surface-mode",
-        choices=["auto", "manual_roi"],
-        default=None,
-        help="Support-surface selection mode (default: from config, usually auto)",
+    add_inference_runtime_args(
+        parser,
+        defaults,
+        include_device=True,
+        include_config=True,
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def run_inference(
@@ -81,135 +57,37 @@ def run_inference(
     support_surface_mode: str = None,
 ):
     """Run SAM3D Body inference and save to JSON."""
-    start_time = time.time()
-
-    # Load config
-    config = load_config(config_path)
-    resolved_support_surface_mode = (
-        support_surface_mode
-        or config.get("processing", {}).get("support_surface_mode", "auto")
-    )
-
-    # Setup output directory
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Parse component options
-    detector_name = detector if detector != "none" else None
-    segmentor_name = segmentor if segmentor and segmentor != "none" else None
-    fov_name = fov if fov != "none" else None
-
-    print(f"\n{'='*60}")
-    print("SAM3D Body Inference")
-    print(f"{'='*60}")
-    print(f"Input: {input_path}")
-    print(f"Output: {output_dir}")
-    print(f"Device: {device}")
-    print(f"Detector: {detector_name or 'none'}")
-    print(f"Segmentor: {segmentor_name or 'none'}")
-    print(f"FOV estimator: {fov_name or 'none'}")
-    print(f"Use mask: {use_mask}")
-    print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")
-    print(f"Support surface: {resolved_support_surface_mode}")
-    print(f"{'='*60}\n")
-
-    # Step 1: Extract frames
-    print("[1/2] Extracting frames...")
-    video_info = get_video_info(input_path)
-    print(f"  Video: {video_info['width']}x{video_info['height']}, {video_info['fps']:.2f} FPS")
-
-    frames_dir = output_dir / "frames"
-    frame_paths, actual_fps = extract_frames(input_path, str(frames_dir), target_fps=fps)
-    print(f"  Extracted {len(frame_paths)} frames at {actual_fps:.2f} FPS")
-
-    # Step 2: Run SAM3D Body
-    print("\n[2/2] Running SAM3D Body inference...")
-
-    from src.sam3d_inference import SAM3DInference
-
-    sam3d = SAM3DInference(
-        sam3d_root=config["sam3d"]["sam3d_root"],
-        checkpoint_path=config["sam3d"]["checkpoint"],
-        mhr_path=config["sam3d"]["mhr_path"],
+    stage = run_inference_stage(
+        input_path=input_path,
+        output_dir=output_dir,
+        fps=fps,
         device=device,
-        detector_name=detector_name,
-        detector_path=config["sam3d"].get("detector_path"),
-        segmentor_name=segmentor_name,
-        segmentor_path=config["sam3d"].get("segmentor_path"),
-        fov_name=fov_name,
-        fov_path=config["sam3d"].get("fov_path"),
-        bbox_threshold=config["sam3d"]["bbox_threshold"],
+        config_path=config_path,
+        detector=detector,
+        segmentor=segmentor,
+        fov=fov,
         use_mask=use_mask,
-        inference_type=config["sam3d"]["inference_type"],
         single_person=single_person,
-        support_surface_mode=resolved_support_surface_mode,
+        support_surface_mode=support_surface_mode,
+        save_artifacts=True,
+        save_raw_keypoints=False,
+        show_header=True,
+        header_title="SAM3D Body Inference",
+        step_offset=0,
+        step_total=2,
     )
 
-    inference_results = sam3d.process_video(frame_paths, progress=True)
-
-    # Process frames and collect outputs in SAM3D format
-    all_outputs = []
-    for frame_data in inference_results["frames"]:
-        frame_path = frame_data["frame_path"]
-        frame_name = Path(frame_path).name
-        frame_entry = {"frame": frame_name, "outputs": []}
-
-        outputs_to_save = []
-        if single_person:
-            if frame_data["output"] is not None:
-                outputs_to_save = [frame_data["output"]]
-        else:
-            outputs_to_save = frame_data.get("outputs", [])
-
-        for out in outputs_to_save:
-            person_data = {
-                "bbox": out.get("bbox", [0, 0, video_info['width'], video_info['height']]),
-                "focal_length": float(out.get("focal_length", 1000.0)),
-                "pred_keypoints_3d": np.array(out.get("pred_keypoints_3d", [])).tolist(),
-                "pred_cam_t": np.array(out.get("pred_cam_t", [0, 0, 5])).tolist(),
-            }
-            # Include optional fields if present
-            if "pred_keypoints_2d" in out:
-                person_data["pred_keypoints_2d"] = np.array(out["pred_keypoints_2d"]).tolist()
-            if "shape_params" in out:
-                person_data["shape_params"] = np.array(out["shape_params"]).tolist()
-            if "scene_ground" in out:
-                person_data["scene_ground"] = out["scene_ground"]
-
-            frame_entry["outputs"].append(person_data)
-
-        all_outputs.append(frame_entry)
-
-    # Save to JSON (SAM3D format)
-    json_path = output_dir / "video_outputs.json"
-    with open(json_path, 'w') as f:
-        json.dump(all_outputs, f, indent=2)
-
-    # Also save metadata
-    meta_path = output_dir / "inference_meta.json"
-    with open(meta_path, 'w') as f:
-        json.dump({
-            "input_video": str(input_path),
-            "fps": actual_fps,
-            "num_frames": len(frame_paths),
-            "video_info": video_info,
-            "inference_time": time.time() - start_time,
-            "single_person": single_person,
-            "support_surface_mode": resolved_support_surface_mode,
-            "selection": inference_results.get("selection", {}),
-            "scene_ground": inference_results.get("scene_ground", {}),
-        }, f, indent=2)
-
-    elapsed = time.time() - start_time
+    elapsed = stage["inference_meta"].get("inference_time", 0.0)
     print(f"\n{'='*60}")
     print("Inference Complete!")
     print(f"{'='*60}")
-    print(f"Time: {elapsed:.1f}s ({len(frame_paths)/elapsed:.1f} FPS)")
-    print(f"Frames: {len(frame_paths)}")
-    print(f"Output: {json_path}")
+    throughput = len(stage["frame_paths"]) / elapsed if elapsed > 0 else 0.0
+    print(f"Time: {elapsed:.1f}s ({throughput:.1f} FPS)")
+    print(f"Frames: {len(stage['frame_paths'])}")
+    print(f"Output: {stage['saved_paths']['video_outputs']}")
     print(f"{'='*60}\n")
 
-    return str(json_path)
+    return str(stage["saved_paths"]["video_outputs"])
 
 
 def main():

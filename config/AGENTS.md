@@ -4,13 +4,13 @@
 # config
 
 ## Purpose
-This directory contains YAML configuration that defines repository-local defaults for external tool paths, inference behavior, support-surface selection, ground and vertical translation modes, post-IK correction, and the mapping from SAM3D Body's MHR70 skeleton to OpenSim marker names, weights, and body segments.
+This directory contains YAML configuration that defines repository-local defaults for external tool paths, inference behavior, single-person selection, support-surface selection, ground and vertical translation modes, post-IK correction, and the mapping from SAM3D Body's MHR70 skeleton to OpenSim marker names, derived markers, runtime IK subset order, weights, and body segments.
 
 ## Key Files
 | File | Description |
 |------|-------------|
 | `config.yaml` | Primary pipeline configuration with SAM3D, processing, support-surface, OpenSim, and output defaults. |
-| `marker_mapping.yaml` | Declarative MHR70 keypoint names, OpenSim marker mappings, derived markers, body-segment assignments, and runtime marker weights. |
+| `marker_mapping.yaml` | Declarative MHR70 keypoint names, OpenSim marker mappings, derived markers, body-segment assignments, runtime IK subset order, and runtime marker weights. |
 
 ## Subdirectories
 This directory has no versioned subdirectories.
@@ -30,7 +30,7 @@ This directory has no versioned subdirectories.
 ### Common Patterns
 - `config.yaml` stores operational defaults and absolute external paths.
 - `config.yaml` is the default source for `single_person`, `ground_alignment_mode`, `vertical_translation_mode`, `support_surface_mode`, and `post_ik_foot_snap_mode`.
-- `marker_mapping.yaml` mirrors code-level defaults so changes should normally be reflected in both the converter and the runtime OpenSim marker/task helper.
+- `marker_mapping.yaml` is the default source for converter marker naming, derived markers, runtime IK subset order, and runtime IK weight overrides.
 
 ## Dependencies
 

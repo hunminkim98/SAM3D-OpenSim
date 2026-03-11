@@ -33,6 +33,9 @@ env/
 *.swo
 *~
 
+# OMX / agent state
+.omx/
+
 # Output directories
 output_*/
 frames/
@@ -44,8 +47,11 @@ frames/
 # Temporary files
 *.tmp
 *.temp
+*.out
 *.log
 _run_ik.py
+.tmp_*
+tmp_*
 
 # Video files (too large for git)
 *.mp4

@@ -1,6 +1,6 @@
 # How to Run SAM3D-OpenSim
 
-Step-by-step guide for running the video-to-OpenSim pipeline.
+Practical command guide for the current canonical pipeline.
 
 ## Quick Start
 
@@ -12,214 +12,232 @@ python run_full_pipeline.py --input video.mp4 --height 1.69 \
     --detector sam3 --fov moge2 --global-translation
 ```
 
-## Workflow Options
+## Recommended Workflows
 
-### Option 1: Full Pipeline (One Command)
+### Full pipeline
 
-Best for first-time processing:
+Best when processing a clip for the first time:
 
 ```bash
 python run_full_pipeline.py --input video.mp4 --height 1.69 \
     --detector sam3 --fov moge2 --global-translation
 ```
 
-**Output:** TRC, MOT, and FBX files in `output_YYYYMMDD_HHMMSS_videoname/`
+### Two-stage workflow
 
-### Option 2: Two-Stage Workflow (Recommended)
+Best when iterating on export settings without rerunning inference:
 
-Best for iterating on export settings without re-running inference:
+Stage 1:
 
-**Stage 1: Inference (slow, run once)**
 ```bash
 python run_inference.py --input video.mp4 --detector sam3 --fov moge2
 ```
 
-**Stage 2: Export (fast, iterate on settings)**
+Stage 2:
+
 ```bash
 python run_export.py --input output_dir/video_outputs.json --height 1.69 \
-    --global-translation --smooth 6.0
-```
-
-## Configuration Examples
-
-### Best Quality (Production)
-
-```bash
-python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector sam3 \
-    --fov moge2 \
     --global-translation \
-    --smooth 6.0
+    --ground-alignment-mode contact_aware \
+    --vertical-translation-mode hybrid_support_plane \
+    --save_graph
 ```
 
-### Fast Preview
+### Manual support surface
+
+Use this when the real contact plane is not the room floor:
 
 ```bash
 python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector vitdet \
-    --skip-fbx
+    --detector sam3 --fov moge2 --global-translation \
+    --support-surface-mode manual_roi \
+    --vertical-translation-mode hybrid_support_plane \
+    --post-ik-foot-snap stance_only
 ```
 
-### Walking/Running Analysis
+### CPU inference
+
+`run_full_pipeline.py` does not expose `--device`, so use the two-stage path:
 
 ```bash
-python run_full_pipeline.py --input walking.mp4 --height 1.69 \
-    --detector sam3 \
-    --fov moge2 \
-    --global-translation
+python run_inference.py --input video.mp4 --device cpu
+python run_export.py --input output_dir/video_outputs.json --height 1.69
 ```
 
-### Stationary Subject
+## Common Examples
 
-```bash
-python run_full_pipeline.py --input standing.mp4 --height 1.69 \
-    --detector sam3 \
-    --fov moge2
-```
-
-### Skip OpenSim IK (TRC only)
+### Fast preview
 
 ```bash
 python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --skip-ik --skip-fbx
+    --detector vitdet --skip-fbx
 ```
 
-### Adjust Smoothing
+### TRC only
 
 ```bash
-# More smoothing (slower movements)
-python run_export.py --input video_outputs.json --height 1.69 --smooth 4.0
+python run_export.py --input output_dir/video_outputs.json --height 1.69 \
+    --skip-ik --skip-fbx --save_graph
+```
 
-# Less smoothing (faster movements)
-python run_export.py --input video_outputs.json --height 1.69 --smooth 8.0
+### Smoothing
+
+```bash
+# More smoothing
+python run_export.py --input output_dir/video_outputs.json --height 1.69 --smooth 4.0
+
+# Less smoothing
+python run_export.py --input output_dir/video_outputs.json --height 1.69 --smooth 8.0
 
 # No smoothing
-python run_export.py --input video_outputs.json --height 1.69 --smooth 0
+python run_export.py --input output_dir/video_outputs.json --height 1.69 --smooth 0
 ```
 
 ## Command Reference
 
-### run_full_pipeline.py
+### `run_pipeline.py`
 
-Full pipeline from video to OpenSim outputs.
+One-process convenience wrapper over the same shared Stage 1 + Stage 2 helpers.
+
+It may additionally write:
+
+- `keypoints_raw.json`
+- `processing_report.json`
+
+`--visualize` is currently a deprecated compatibility flag and does not generate extra outputs.
+
+### `run_full_pipeline.py`
+
+Canonical two-stage orchestrator:
 
 ```bash
 python run_full_pipeline.py \
-    --input VIDEO_PATH \           # Required: input video
-    --height HEIGHT \              # Subject height in meters (default: 1.75)
-    --mass MASS \                  # Subject mass in kg (default: 70.0)
-    --output OUTPUT_DIR \          # Output directory (default: auto)
-    --fps FPS \                    # Target FPS (default: 30)
-    --detector DETECTOR \          # vitdet, yolo11, sam3, none (default: vitdet)
-    --fov FOV \                    # moge2, none (default: moge2)
-    --smooth CUTOFF \              # Smoothing cutoff Hz (default: 6.0, 0=disable)
-    --global-translation \         # Enable global movement tracking
-    --skip-inference \             # Use existing video_outputs.json
-    --skip-ik \                    # Skip OpenSim IK
-    --skip-fbx                     # Skip FBX export
-```
-
-### run_inference.py
-
-Stage 1: SAM3D Body inference only.
-
-```bash
-python run_inference.py \
     --input VIDEO_PATH \
-    --detector DETECTOR \
-    --fov FOV \
-    --output OUTPUT_DIR
-```
-
-### run_export.py
-
-Stage 2: Export from existing JSON to TRC/MOT/FBX.
-
-```bash
-python run_export.py \
-    --input VIDEO_OUTPUTS_JSON \   # Path to video_outputs.json
     --height HEIGHT \
-    --global-translation \
+    --mass MASS \
+    --output OUTPUT_DIR \
+    --fps FPS \
+    --detector DETECTOR \
+    --segmentor SEGMENTOR \
+    --fov FOV \
+    --use-mask \
+    --single_person true \
+    --support-surface-mode auto \
     --smooth CUTOFF \
+    --ground-alignment-mode auto \
+    --vertical-translation-mode auto \
+    --post-ik-foot-snap off \
+    --global-translation \
+    --skip-inference \
     --skip-ik \
     --skip-fbx
 ```
 
-## Using Existing SAM3D Outputs
+### `run_inference.py`
 
-You can process outputs from the SAM3D Body demo:
+Stage 1 only:
+
+```bash
+python run_inference.py \
+    --input VIDEO_PATH \
+    --output OUTPUT_DIR \
+    --fps FPS \
+    --device cuda \
+    --detector DETECTOR \
+    --segmentor SEGMENTOR \
+    --fov FOV \
+    --use-mask \
+    --single_person true \
+    --support-surface-mode auto
+```
+
+### `run_export.py`
+
+Stage 2 only:
 
 ```bash
 python run_export.py \
-    --input C:\Sam3dBody\sam-3d-body\outputs\my_video\video_outputs.json \
-    --height 1.75 \
-    --global-translation
+    --input VIDEO_OUTPUTS_JSON \
+    --height HEIGHT \
+    --mass MASS \
+    --fps FPS \
+    --global-translation \
+    --smooth CUTOFF \
+    --ground-alignment-mode auto \
+    --vertical-translation-mode auto \
+    --post-ik-foot-snap off \
+    --save_graph \
+    --skip-ik \
+    --skip-fbx
 ```
 
 ## Output Files
 
-After running, you'll find:
+Typical output directory:
 
-```
+```text
 output_YYYYMMDD_HHMMSS_videoname/
-├── frames/                           # Extracted PNG frames
+├── frames/                           # Extracted JPG frames
 ├── video_outputs.json                # SAM3D keypoints + cam_t
 ├── inference_meta.json               # Video metadata
+├── post_ik_contact_meta.json         # Contact/flight metadata used before IK
 ├── markers_videoname.trc             # OpenSim markers
 ├── markers_videoname_ik.mot          # Joint angles
-├── markers_videoname_model.osim      # OpenSim model
+├── markers_videoname_ik_raw.mot      # Raw IK output when post-IK correction is enabled
+├── markers_videoname_foot_snap_report.json
+├── markers_videoname_model.osim      # OpenSim model with runtime markers
+├── graphs/coords/*.png               # TRC coordinate plots when --save_graph is enabled
+├── graphs/angles/*.png               # MOT angle plots when --save_graph is enabled and IK runs
 └── markers_videoname.fbx             # Blender animation
 ```
 
-## Viewing Results
-
-### OpenSim GUI
-
-1. Open OpenSim
-2. File → Open Model → `markers_*_model.osim`
-3. File → Load Motion → `markers_*_ik.mot`
-4. Click Play
-
-### Blender
-
-1. Open Blender
-2. File → Import → FBX → `markers_*.fbx`
-3. Press Space to play animation
-
 ## Troubleshooting
 
-### "Input not found"
+### Input not found
 
-Ensure the video path is correct and the file exists.
+Check the input path and confirm the file exists.
 
-### "No module named 'torch'"
+### No module named `torch`
 
-Activate the correct environment:
+Activate the inference environment:
+
 ```bash
 conda activate sam_3d_body
 ```
 
 ### CUDA out of memory
 
-- Lower FPS: `--fps 15`
-- Use smaller video resolution
-- Close other GPU applications
+- lower `--fps`
+- use a smaller source video
+- use `run_inference.py --device cpu`
 
 ### IK errors
 
-- Verify TRC loads in OpenSim GUI
-- Check subject height is correct
-- Try `--skip-ik` to verify TRC generation
+- verify the TRC was written successfully
+- confirm you are using the `Pose2Sim` environment for IK
+- try `--skip-ik` first to isolate export-stage issues
 
-### Jittery output
+### Blender export not found
 
-- Increase smoothing: `--smooth 4.0`
-- Ensure `--fov moge2` is enabled for global translation
+The runtime auto-detects Blender under `C:\Program Files\Blender Foundation\Blender *\blender.exe`.
 
-## Tips
+If your install lives elsewhere, set `BLENDER_PATH` or `SAM3D_OPENSIM_BLENDER_PATH`.
 
-1. **Always use `--fov moge2`** when using `--global-translation`
-2. **Use the two-stage workflow** when iterating on height or smoothing
-3. **SAM3 detector** gives best results but is slower
-4. **6 Hz smoothing** is a good default for walking/running
-5. **Lower smoothing (8-10 Hz)** for fast movements like jumping
+### `--visualize` has no visible effect
+
+`run_pipeline.py --visualize` is currently a deprecated no-op.
+
+### `graphs/angles/` is missing
+
+If you used `--skip-ik`, only `graphs/coords/` is expected.
+
+Angle plots are generated only when a MOT file exists.
+
+It is kept only for compatibility and does not generate extra viewer or media outputs.
+
+## Practical Tips
+
+- Use `--fov moge2` when enabling `--global-translation`.
+- Prefer the two-stage workflow when tuning export behavior.
+- Use `--support-surface-mode manual_roi` for treadmill, box, or elevated contact scenes.
+- Use `--ground-alignment-mode contact_aware` for jumps and flight phases.

@@ -5,10 +5,13 @@ This module provides an interface to run inverse kinematics
 using OpenSim/Pose2Sim to compute joint angles from marker data.
 """
 
+import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 
 from src.opensim_marker_spec import (
@@ -17,6 +20,177 @@ from src.opensim_marker_spec import (
     get_runtime_ik_marker_specs,
 )
 from src.post_ik_foot_snap import apply_post_ik_foot_snap
+from utils.windows_paths import require_conda_env_python, require_pose2sim_setup
+
+
+def run_external_opensim_ik(
+    *,
+    trc_path: str | Path,
+    output_dir: str | Path,
+    project_root: str | Path,
+    post_ik_foot_snap_mode: str = "off",
+) -> Optional[Path]:
+    """
+    Run IK in the external Pose2Sim/OpenSim environment via a generated script.
+
+    This is the canonical Windows-oriented path used by the CLI runners.
+    """
+    project_root = Path(project_root).resolve()
+    trc_path = Path(trc_path).resolve()
+    output_dir = Path(output_dir).resolve()
+
+    opensim_python = require_conda_env_python(
+        "Pose2Sim",
+        override_vars=("SAM3D_OPENSIM_OPENSIM_PYTHON", "OPENSIM_PYTHON"),
+    )
+    pose2sim_setup = require_pose2sim_setup(
+        opensim_python=opensim_python,
+        override_vars=("SAM3D_OPENSIM_POSE2SIM_SETUP", "POSE2SIM_SETUP"),
+    )
+    marker_specs = get_runtime_ik_marker_specs(project_root)
+    marker_specs_json = json.dumps(marker_specs)
+    marker_task_xml = build_ik_taskset_xml(marker_specs)
+
+    print(f"  IK lower-body markers: {format_lower_body_marker_summary(marker_specs)}")
+
+    ik_script = '''
+import json
+import sys
+from pathlib import Path
+
+import opensim as osim
+
+project_root = Path(r"{project_root}")
+trc_path = Path(r"{trc_path}")
+output_dir = Path(r"{output_dir}")
+pose2sim_setup = Path(r"{pose2sim_setup}")
+marker_specs = json.loads(r"""{marker_specs_json}""")
+marker_task_xml = r"""{marker_task_xml}"""
+post_ik_foot_snap_mode = r"{post_ik_foot_snap_mode}"
+
+model_path = pose2sim_setup / "Model_Pose2Sim_simple.osim"
+
+def get_trc_time_range(trc_file):
+    with open(trc_file, 'r', encoding='utf-8') as handle:
+        lines = handle.readlines()
+    header_values = lines[2].split("\\t")
+    data_rate = float(header_values[0])
+    num_frames = int(header_values[2])
+    return (0.0, (num_frames - 1) / data_rate)
+
+time_range = get_trc_time_range(str(trc_path))
+stem = trc_path.stem
+mot_path = output_dir / f"{{stem}}_ik.mot"
+marker_set_file = output_dir / f"{{stem}}_ik_markers.xml"
+setup_file = output_dir / f"{{stem}}_ik_setup.xml"
+
+print(
+    "Configured IK foot markers: "
+    + ", ".join(
+        f"{{spec['name']}}={{spec['weight']:.2f}}"
+        for spec in marker_specs
+        if spec["name"] in ("LBigToe", "LSmallToe", "LHeel", "RBigToe", "RSmallToe", "RHeel")
+    )
+)
+
+model = osim.Model(str(model_path))
+for spec in marker_specs:
+    try:
+        marker_name = spec["name"]
+        body_name = spec["body"]
+        x, y, z = spec["location"]
+        body = model.getBodySet().get(body_name)
+        marker = osim.Marker()
+        marker.setName(marker_name)
+        marker.setParentFrame(body)
+        marker.set_location(osim.Vec3(x, y, z))
+        model.addMarker(marker)
+    except Exception as exc:
+        print(f"Warning: {{marker_name}}: {{exc}}")
+
+model.finalizeConnections()
+model.initSystem()
+
+model_with_markers_path = output_dir / f"{{stem}}_model.osim"
+model.printToXML(str(model_with_markers_path))
+
+with open(marker_set_file, 'w', encoding='utf-8') as handle:
+    handle.write(marker_task_xml)
+
+ik_setup_xml = '<?xml version="1.0" encoding="UTF-8" ?>\\n'
+ik_setup_xml += '<OpenSimDocument Version="40000">\\n'
+ik_setup_xml += '    <InverseKinematicsTool name="ik_tool">\\n'
+ik_setup_xml += f'        <model_file>{{str(model_with_markers_path)}}</model_file>\\n'
+ik_setup_xml += '        <constraint_weight>20</constraint_weight>\\n'
+ik_setup_xml += '        <accuracy>1e-5</accuracy>\\n'
+ik_setup_xml += f'        <marker_file>{{str(trc_path)}}</marker_file>\\n'
+ik_setup_xml += '        <coordinate_file></coordinate_file>\\n'
+ik_setup_xml += f'        <time_range>{{time_range[0]}} {{time_range[1]}}</time_range>\\n'
+ik_setup_xml += f'        <output_motion_file>{{str(mot_path)}}</output_motion_file>\\n'
+ik_setup_xml += '        <report_errors>true</report_errors>\\n'
+ik_setup_xml += '        <report_marker_locations>false</report_marker_locations>\\n'
+ik_setup_xml += f'        <results_directory>{{str(output_dir)}}</results_directory>\\n'
+ik_setup_xml += f'        <IKTaskSet file="{{str(marker_set_file)}}"/>\\n'
+ik_setup_xml += '    </InverseKinematicsTool>\\n'
+ik_setup_xml += '</OpenSimDocument>\\n'
+
+with open(setup_file, 'w', encoding='utf-8') as handle:
+    handle.write(ik_setup_xml)
+
+try:
+    ik_tool = osim.InverseKinematicsTool(str(setup_file))
+    ik_tool.run()
+    print(f"SUCCESS: {{mot_path}}")
+except Exception as exc:
+    print(f"ERROR: {{exc}}")
+    raise
+
+if post_ik_foot_snap_mode != "off":
+    sys.path.insert(0, str(project_root))
+    from src.post_ik_foot_snap import apply_post_ik_foot_snap
+
+    snap_report = apply_post_ik_foot_snap(
+        model_path=model_with_markers_path,
+        mot_path=mot_path,
+        output_dir=output_dir,
+        contact_meta_path=output_dir / "post_ik_contact_meta.json",
+        mode=post_ik_foot_snap_mode,
+    )
+    print(
+        "Post-IK foot snap: "
+        f"{{snap_report.get('status')}}"
+        f", corrected_frames={{snap_report.get('corrected_frames', 0)}}"
+        f", max_drop={{snap_report.get('max_applied_drop_m', 0.0):.4f}} m"
+    )
+'''.format(
+        project_root=project_root,
+        trc_path=trc_path,
+        output_dir=output_dir,
+        pose2sim_setup=pose2sim_setup,
+        marker_specs_json=marker_specs_json,
+        marker_task_xml=marker_task_xml,
+        post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+    )
+
+    ik_script_path = output_dir / "_run_ik.py"
+    ik_script_path.write_text(ik_script, encoding="utf-8")
+
+    result = subprocess.run(
+        [str(opensim_python), str(ik_script_path)],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+    )
+
+    print(result.stdout)
+    if result.stderr:
+        for line in result.stderr.split("\n"):
+            if line and not line.startswith("[info]"):
+                print(line)
+
+    ik_script_path.unlink(missing_ok=True)
+    mot_files = list(output_dir.glob("*_ik.mot"))
+    return mot_files[0] if mot_files else None
 
 
 class OpenSimIK:

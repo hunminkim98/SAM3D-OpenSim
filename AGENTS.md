@@ -1,17 +1,17 @@
-<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-10 09:53:31 KST -->
+<!-- Generated: 2026-03-08 12:51:08 KST | Updated: 2026-03-10 10:54:42 KST -->
 
 # SAM3D-OpenSim
 
 ## Purpose
-SAM3D-OpenSim converts monocular video into OpenSim-ready motion data by running SAM3D Body inference, transforming MHR70 keypoints into biomechanical marker trajectories, solving inverse kinematics, and exporting Blender-ready motion. The current pipeline also supports single-person selection and tracking, MoGe-based support-surface grounding, hybrid vertical translation, and post-IK stance-phase foot snapping.
+SAM3D-OpenSim converts monocular video into OpenSim-ready motion data by running SAM3D Body inference, transforming MHR70 keypoints into biomechanical marker trajectories, solving inverse kinematics, and exporting Blender-ready motion. The current pipeline centers on a canonical two-stage flow, while still supporting single-person selection and tracking, MoGe-based support-surface grounding, hybrid vertical translation, and post-IK stance-phase foot snapping.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `run_full_pipeline.py` | Windows-oriented orchestrator for inference, OpenSim IK, post-IK foot snap, and Blender export. |
-| `run_inference.py` | Stage 1 CLI that extracts frames and saves SAM3D Body outputs plus selection and scene-ground metadata to `video_outputs.json`. |
-| `run_export.py` | Stage 2 CLI that converts saved SAM3D results into TRC, MOT, and FBX outputs with contact-aware translation options. |
-| `run_pipeline.py` | Combined pipeline entry point used by the full runner for TRC-centric processing and optional direct IK/export. |
+| `run_full_pipeline.py` | Thin Windows-oriented orchestrator that runs `run_inference.py` first and `run_export.py` second. |
+| `run_inference.py` | Canonical Stage 1 CLI that extracts frames and saves SAM3D Body outputs plus selection and scene-ground metadata to `video_outputs.json`. |
+| `run_export.py` | Canonical Stage 2 CLI that converts saved SAM3D results into TRC, MOT, and FBX outputs with contact-aware translation options. |
+| `run_pipeline.py` | Convenience wrapper that composes the shared Stage 1 and Stage 2 helpers inside one process. |
 | `test_imports.py` | Environment smoke test for SAM3, MoGe2, and SAM3D Body imports. |
 | `server.py` | Simple HTTP server for the local animation viewer. |
 | `index.html` | Two-panel viewer for syncing a source video with exported GLB/FBX animation. |
@@ -33,9 +33,10 @@ SAM3D-OpenSim converts monocular video into OpenSim-ready motion data by running
 
 ### Working In This Directory
 - Keep Windows-specific external tool paths aligned with the actual deployment environment; several entry points assume SAM3D Body, Pose2Sim, and Blender live outside the repo.
-- Prefer the two-stage workflow when iterating on export logic: reuse an existing `video_outputs.json` instead of re-running expensive inference.
+- Prefer the canonical two-stage workflow when iterating on export logic: reuse an existing `video_outputs.json` instead of re-running expensive inference.
 - Treat coordinate-system and contact changes as cross-cutting: updates usually require matching edits in `src/coordinate_transform.py`, `src/keypoint_converter.py`, `config/marker_mapping.yaml`, runtime OpenSim marker/task helpers, and Blender export scripts.
 - Keep viewer tooling (`index.html`, `server.py`) separate from the motion pipeline; it consumes outputs but should not redefine motion semantics.
+- When editing orchestration, preserve the layering: `run_inference.py` and `run_export.py` are the implementation path, while `run_pipeline.py` and `run_full_pipeline.py` should stay thin.
 
 ### Testing Requirements
 - Run `python test_imports.py` in the `sam_3d_body` environment after changing inference integration or external dependency paths.
@@ -47,6 +48,7 @@ SAM3D-OpenSim converts monocular video into OpenSim-ready motion data by running
 - Entry points prepend `PROJECT_ROOT` to `sys.path` and delegate most logic to `src/` and `utils/`.
 - Intermediate data is stored in timestamped output directories named `output_YYYYMMDD_HHMMSS_<video>`.
 - The SAM3D interchange format is a per-frame JSON list whose `outputs` entries contain `pred_keypoints_3d`, `pred_cam_t`, `focal_length`, optional 2D/shape data, and clip-level scene-ground metadata when MoGe support-surface features are enabled.
+- Shared stage logic now lives in `src/inference_stage.py`, `src/export_stage.py`, and `src/pipeline_artifacts.py`; root CLIs should compose those helpers instead of re-implementing them.
 
 ## Dependencies
 
@@ -171,5 +173,6 @@ Run IK-related commands in the `Pose2Sim` environment, not `sam_3d_body`.
 4. Added centralized OpenSim runtime marker and IK task generation, including heel, big-toe, and small-toe markers.
 5. Added post-IK stance-phase foot snap that preserves raw MOT alongside corrected MOT output.
 6. Added Windows path auto-discovery helpers for Conda environments, Pose2Sim assets, and Blender executables.
+7. Refactored the codebase around the canonical `run_inference.py -> run_export.py` pipeline and moved stage/orchestration helpers into `src/`.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
