@@ -41,7 +41,11 @@ def run_combined_pipeline(
     single_person: Optional[bool] = None,
     support_surface_mode: Optional[str] = None,
     post_ik_foot_snap_mode: Optional[str] = None,
+    ik_backend: Optional[str] = None,
     save_graph: bool = False,
+    save_mesh_video: bool = False,
+    save_mesh_sequence: bool = False,
+    mesh_sequence_format: str = "ply",
 ) -> dict:
     """Run Stage 1 then Stage 2 in-process using shared stage helpers."""
     start_time = time.time()
@@ -63,6 +67,7 @@ def run_combined_pipeline(
         single_person=single_person,
         support_surface_mode=support_surface_mode,
         post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        ik_backend=ik_backend,
     )
     output_dir = resolve_pipeline_output_dir(
         input_path=input_path,
@@ -81,6 +86,7 @@ def run_combined_pipeline(
         ground_alignment_mode=resolved["ground_alignment_mode"],
         vertical_translation_mode=resolved["vertical_translation_mode"],
         post_ik_foot_snap_mode=resolved["post_ik_foot_snap_mode"],
+        ik_backend=resolved["ik_backend"],
         single_person=resolved["single_person"],
         support_surface_mode=resolved["support_surface_mode"],
         global_translation=global_translation,
@@ -104,6 +110,9 @@ def run_combined_pipeline(
         single_person=resolved["single_person"],
         support_surface_mode=resolved["support_surface_mode"],
         vertical_translation_mode=resolved["vertical_translation_mode"],
+        save_mesh_video=save_mesh_video,
+        save_mesh_sequence=save_mesh_sequence,
+        mesh_sequence_format=mesh_sequence_format,
         save_artifacts=True,
         save_raw_keypoints=True,
         show_header=False,
@@ -113,7 +122,17 @@ def run_combined_pipeline(
     results["timings"]["stage1_inference"] = time.time() - t0
     results["outputs"]["raw_keypoints"] = stage1["saved_paths"].get("raw_keypoints")
     results["outputs"]["video_outputs"] = stage1["saved_paths"]["video_outputs"]
+    results["outputs"]["mesh_video"] = stage1["saved_paths"].get("mesh_video")
+    results["outputs"]["mesh_sequence_dir"] = stage1["saved_paths"].get("mesh_sequence_dir")
     print(f"  Saved SAM3D format: {stage1['saved_paths']['video_outputs']}")
+    if stage1["saved_paths"].get("mesh_video"):
+        print(f"  Saved mesh overlay video: {stage1['saved_paths']['mesh_video']}")
+    if stage1["saved_paths"].get("mesh_sequence_dir"):
+        print(
+            "  Saved mesh sequence: "
+            f"{stage1['saved_paths']['mesh_sequence_dir']} "
+            f"({stage1['saved_paths'].get('mesh_sequence_count', 0)} files)"
+        )
 
     t0 = time.time()
     export_results = run_export_stage(
@@ -130,6 +149,7 @@ def run_combined_pipeline(
         ground_alignment_mode=resolved["ground_alignment_mode"],
         vertical_translation_mode=resolved["vertical_translation_mode"],
         post_ik_foot_snap_mode=resolved["post_ik_foot_snap_mode"],
+        ik_backend=resolved["ik_backend"],
         save_graph=save_graph,
         show_header=False,
         step_offset=2,
@@ -143,6 +163,10 @@ def run_combined_pipeline(
     results["outputs"]["trc"] = export_results.get("trc")
     results["outputs"]["mot"] = export_results.get("mot")
     results["outputs"]["fbx"] = export_results.get("fbx")
+    results["outputs"]["pose2sim_workspace"] = export_results.get("pose2sim_workspace")
+    results["outputs"]["pose2sim_augmented_trc"] = export_results.get(
+        "pose2sim_augmented_trc"
+    )
 
     total_time = time.time() - start_time
     results["timings"]["total"] = total_time
@@ -159,6 +183,7 @@ def run_combined_pipeline(
         visualize_requested=visualize,
         single_person=resolved["single_person"],
         post_ik_foot_snap_mode=resolved["post_ik_foot_snap_mode"],
+        ik_backend=resolved["ik_backend"],
     )
     results["outputs"].update(report["outputs"])
     results["outputs"]["report"] = save_processing_report(report, output_dir)

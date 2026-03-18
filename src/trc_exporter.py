@@ -83,7 +83,9 @@ class TRCExporter:
         marker_header = "Frame#\tTime"
         for name in marker_names:
             marker_header += f"\t{name}\t\t"
-        lines.append(marker_header.rstrip("\t"))
+        # Keep a final empty marker column so Pose2Sim's header patching logic
+        # can append augmented marker names using the expected "\t\t\t\n" suffix.
+        lines.append(marker_header + "\t")
 
         # Line 5: Coordinate labels
         coord_header = "\t"

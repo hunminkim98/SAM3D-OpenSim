@@ -1,0 +1,66 @@
+# Internal default configuration for installed execution.
+
+[run]
+mode = "full"
+skip_inference = false
+skip_ik = false
+skip_fbx = false
+global_translation = false
+person_index = 0
+
+[input]
+video_path = ""
+video_outputs_path = ""
+fps = 30.0
+
+[subject]
+height = 1.75
+mass = 70.0
+
+[sam3d]
+sam3d_root = "C:/Sam3dBody/sam-3d-body"
+checkpoint = "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/model.ckpt"
+mhr_path = "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
+detector_name = "vitdet"
+detector_path = ""
+segmentor_name = "none"
+segmentor_path = ""
+fov_name = "moge2"
+fov_path = ""
+device = "cuda"
+bbox_threshold = 0.8
+nms_threshold = 0.3
+use_mask = false
+inference_type = "full"
+
+[processing]
+single_person = true
+ground_alignment_mode = "auto"
+vertical_translation_mode = "auto"
+support_surface_mode = "auto"
+post_ik_foot_snap_mode = "off"
+smooth_filter = true
+filter_cutoff = 6.0
+filter_order = 4
+normalize_bones = true
+correct_forward_lean = true
+forward_lean_angle = 0.0
+
+[opensim]
+model = "models/Model_Simple_MHR70.osim"
+markers_xml = "models/Markers_MHR70.xml"
+ik_backend = "direct_opensim"
+ik_accuracy = 1.0e-5
+ik_max_iterations = 1000
+
+[output]
+directory = ""
+save_trc = true
+save_mot = true
+save_scaled_model = true
+save_json = true
+save_mesh_video = false
+save_fbx = false
+save_mesh_sequence = false
+mesh_sequence_format = "ply"
+save_graph = false

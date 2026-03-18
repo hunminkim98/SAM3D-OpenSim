@@ -28,6 +28,10 @@ Wrapper entrypoints:
 - `run_pipeline.py`: thin in-process wrapper over the shared Stage 1 + Stage 2 composition helper
 - `run_full_pipeline.py`: thin Windows-oriented subprocess wrapper that runs Stage 1 first, then Stage 2
 
+Console entrypoint:
+
+- `sam3d-opensim --config Config.toml`: Config.toml-driven full pipeline command
+
 Core modules:
 
 - `src/inference_stage.py`: shared Stage 1 orchestration
@@ -42,6 +46,9 @@ Core modules:
 - `src/opensim_ik.py`: OpenSim and Pose2Sim execution helpers
 - `src/post_ik_foot_snap.py`: stance-phase MOT correction after IK
 - `src/blender_export.py`: shared Blender export subprocess helper
+- `src/pose2sim_workspace.py`: Pose2Sim-compatible workspace and meter TRC staging helpers
+- `src/pose2sim_adapter.py`: Pose2Sim config adapter for augmentation and kinematics
+- `src/pose2sim_augmentation_runner.py`: dedicated Pose2Sim augmentation plus LSTM kinematics runner
 
 ## Coordinate Systems
 
@@ -181,6 +188,28 @@ When `--save_graph` is enabled:
 - `graphs/coords/` stores one PNG per TRC marker, with X/Y/Z plotted against time
 - `graphs/angles/` stores one PNG per MOT coordinate column, when IK is enabled
 
+### Stage 1 mesh outputs
+
+When `--save-mesh-video` is enabled:
+
+- `mesh_vis/overlay.mp4` stores the raw SAM3D Body mesh overlaid on the extracted Stage 1 frames
+
+When `--save-mesh-sequence` is enabled:
+
+- `mesh_export/` stores one mesh file per frame and person
+- `--mesh-sequence-format` controls whether those files are written as `ply` or `obj`
+
+These are Stage 1 sidecar outputs. They are not consumed by `run_export.py` and do not change `video_outputs.json`.
+
+When mesh sidecars are requested, the repo runs a visualization-quality full-refresh mesh pass instead of reusing the tracked-bbox fast path. This keeps the mesh closer to the official SAM3D Body demo behavior at the cost of extra inference time.
+
+### IK backend modes
+
+Two IK backends are currently available:
+
+- `direct_opensim`: current default path using the repo runtime marker/task spec
+- `pose2sim_augmented`: creates `pose2sim_trial/`, writes a meter TRC under `pose-3d/`, runs marker augmentation to create `_LSTM.trc`, then runs Pose2Sim LSTM kinematics
+
 ## Output Files
 
 Typical output directory:
@@ -190,6 +219,8 @@ output_YYYYMMDD_HHMMSS_<video>/
 ├── frames/                        # Extracted JPG frames
 ├── video_outputs.json             # Canonical Stage 1 outputs
 ├── inference_meta.json            # Stage 1 metadata
+├── mesh_vis/overlay.mp4           # Stage 1 mesh overlay video when enabled
+├── mesh_export/frame_*.ply        # Stage 1 mesh sequence when enabled
 ├── post_ik_contact_meta.json      # Contact/flight metadata saved before IK
 ├── markers_*.trc                  # OpenSim marker trajectories
 ├── *_ik.mot                       # IK result
@@ -223,3 +254,4 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69 --skip-
 ```
 
 `run_pipeline.py --visualize` is currently a deprecated compatibility flag and does not produce extra viewer or media outputs.
+Use `--save-mesh-video` or `--save-mesh-sequence` for actual Stage 1 mesh artifacts.

@@ -25,6 +25,7 @@ def resolve_pipeline_runtime_options(
     single_person: Optional[bool] = None,
     support_surface_mode: Optional[str] = None,
     post_ik_foot_snap_mode: Optional[str] = None,
+    ik_backend: Optional[str] = None,
 ) -> dict:
     """Resolve runtime options against config defaults."""
     defaults = load_cli_defaults(config_path)
@@ -57,6 +58,9 @@ def resolve_pipeline_runtime_options(
         "post_ik_foot_snap_mode": (
             post_ik_foot_snap_mode or defaults["post_ik_foot_snap_mode"]
         ),
+        "ik_backend": (
+            ik_backend or defaults["ik_backend"]
+        ),
         "smooth_cutoff": (
             float(smooth_cutoff) if smooth_cutoff is not None else defaults["smooth"]
         ),
@@ -65,17 +69,19 @@ def resolve_pipeline_runtime_options(
 
 def resolve_pipeline_output_dir(
     *,
-    input_path: str | Path,
+    input_path: str | Path | None = None,
     output_dir: Optional[str | Path] = None,
     base_output_dir: Optional[str | Path] = None,
 ) -> Path:
     """Resolve the output directory for a pipeline run."""
     if output_dir is not None:
         resolved = Path(output_dir)
-    elif base_output_dir is not None:
+    elif input_path is not None and base_output_dir is not None:
         resolved = Path(base_output_dir) / get_output_dir(str(input_path))
-    else:
+    elif input_path is not None:
         resolved = get_output_dir(str(input_path))
+    else:
+        raise ValueError("output_dir is required when input_path is not provided")
 
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
@@ -94,6 +100,7 @@ def print_pipeline_banner(
     ground_alignment_mode: str,
     vertical_translation_mode: str,
     post_ik_foot_snap_mode: str,
+    ik_backend: str,
     single_person: bool,
     support_surface_mode: str,
     global_translation: bool,
@@ -114,6 +121,7 @@ def print_pipeline_banner(
         f"Segmentor: {segmentor or 'none'}"
     )
     print(f"Ground alignment: {ground_alignment_mode}")
+    print(f"IK backend: {ik_backend}")
     print(f"Post-IK foot snap: {post_ik_foot_snap_mode}")
     print(f"Vertical translation: {vertical_translation_mode}")
     print(f"Single-person selection: {'ENABLED' if single_person else 'disabled'}")

@@ -194,6 +194,7 @@ def build_processing_report(
     visualize_requested: bool = False,
     single_person: bool = True,
     post_ik_foot_snap_mode: str = "off",
+    ik_backend: str = "direct_opensim",
 ) -> dict:
     """Build the combined processing report emitted by run_pipeline.py."""
     return {
@@ -210,6 +211,7 @@ def build_processing_report(
             "valid_frames": int(stage1["valid_frames"].sum()),
             "single_person": bool(single_person),
             "visualize_requested": bool(visualize_requested),
+            "ik_backend": ik_backend,
             "ground_alignment": export_results.get("ground_alignment", {}),
             "post_ik_foot_snap_mode": post_ik_foot_snap_mode,
         },
@@ -218,10 +220,16 @@ def build_processing_report(
             "directory": str(output_dir),
             "raw_keypoints": stage1["saved_paths"].get("raw_keypoints"),
             "video_outputs": stage1["saved_paths"]["video_outputs"],
+            "mesh_video": stage1["saved_paths"].get("mesh_video"),
+            "mesh_sequence_dir": stage1["saved_paths"].get("mesh_sequence_dir"),
+            "mesh_sequence_format": stage1["saved_paths"].get("mesh_sequence_format"),
+            "mesh_sequence_count": stage1["saved_paths"].get("mesh_sequence_count"),
             "post_ik_contact_meta": export_results.get("post_ik_contact_meta"),
             "trc": export_results.get("trc"),
             "mot": export_results.get("mot"),
             "fbx": export_results.get("fbx"),
+            "pose2sim_workspace": export_results.get("pose2sim_workspace"),
+            "pose2sim_augmented_trc": export_results.get("pose2sim_augmented_trc"),
         },
         "selection": stage1["inference_results"].get("selection", {}),
     }

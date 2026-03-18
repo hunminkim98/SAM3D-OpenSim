@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sam3d-opensim"
+version = "0.1.0"
+description = "SAM3D-OpenSim pipeline with Config.toml-driven execution"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "opencv-python>=4.8.0",
+    "torch>=2.0.0",
+    "tqdm>=4.65.0",
+    "pyyaml>=6.0",
+    "pose2sim>=0.10.0",
+    "trimesh>=3.21.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.scripts]
+sam3d-opensim = "sam3d_opensim.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = [
+    "run_inference",
+    "run_export",
+    "run_pipeline",
+    "run_full_pipeline",
+    "server",
+    "test_imports",
+]
+
+[tool.setuptools.packages.find]
+include = ["sam3d_opensim*", "src*", "utils*"]
+
+[tool.setuptools.package-data]
+sam3d_opensim = ["data/*.toml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

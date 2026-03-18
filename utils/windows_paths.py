@@ -142,6 +142,50 @@ def require_conda_env_python(
     )
 
 
+def resolve_active_or_conda_env_python(
+    env_name: str,
+    override_vars: Sequence[str] = (),
+) -> Path | None:
+    """
+    Resolve Python for OpenSim/Pose2Sim execution with this priority:
+    1. explicit override env vars
+    2. currently active Python / CONDA_PREFIX
+    3. named Conda environment fallback
+    """
+    override_path = _first_existing_path(
+        os.environ[var_name]
+        for var_name in override_vars
+        if os.environ.get(var_name)
+    )
+    if override_path:
+        return override_path
+
+    current_python = _first_existing_path([sys.executable])
+    if current_python:
+        return current_python
+
+    return resolve_conda_env_python(env_name, override_vars=())
+
+
+def require_active_or_conda_env_python(
+    env_name: str,
+    override_vars: Sequence[str] = (),
+) -> Path:
+    python_path = resolve_active_or_conda_env_python(
+        env_name,
+        override_vars=override_vars,
+    )
+    if python_path:
+        return python_path
+
+    env_var_text = ", ".join(override_vars) if override_vars else "override env vars"
+    raise FileNotFoundError(
+        f"Could not locate a Python executable for the active environment or the "
+        f"'{env_name}' Conda environment. Set one of [{env_var_text}] or activate "
+        f"the desired environment before running the command."
+    )
+
+
 def resolve_pose2sim_setup(
     opensim_python: str | Path | None = None,
     override_vars: Sequence[str] = (),

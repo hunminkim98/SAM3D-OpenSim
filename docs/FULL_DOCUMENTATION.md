@@ -20,6 +20,12 @@ This split is intentional:
 
 `run_full_pipeline.py` is a thin subprocess orchestrator that runs those two stages in sequence. `run_pipeline.py` is a thin in-process convenience wrapper that composes the same shared stage helpers in one process.
 
+The preferred user-facing command is:
+
+```bash
+sam3d-opensim --config Config.toml
+```
+
 ### Current Capabilities
 
 - Direct 3D pose from SAM3D Body
@@ -179,6 +185,13 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69 \
     --save_graph
 ```
 
+Pose2Sim augmentation backend:
+
+```bash
+python run_export.py --input output_dir/video_outputs.json --height 1.69 \
+    --ik-backend pose2sim_augmented --skip-fbx
+```
+
 ### 5.4 Re-Export Existing SAM3D Outputs
 
 ```bash
@@ -215,6 +228,7 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69
 | Flag | Meaning | Default |
 |------|---------|---------|
 | `--global-translation` | Use `pred_cam_t` for translation | `false` |
+| `--ik-backend` | `direct_opensim`, `pose2sim_augmented` | `direct_opensim` |
 | `--smooth` | Butterworth cutoff in Hz | `6.0` |
 | `--ground-alignment-mode` | `auto`, `contact_aware`, `per_frame_snap` | `auto` |
 | `--vertical-translation-mode` | `auto`, `legacy_xz_only`, `hybrid_support_plane` | `auto` |
@@ -363,6 +377,15 @@ OpenSim IK does not use all 73 exported TRC markers. The current runtime task se
 
 The default source of truth for runtime IK subset order and runtime IK weight overrides is `config/marker_mapping.yaml`.
 
+### IK Backend Modes
+
+There are now two Stage 2 IK backend modes:
+
+| Backend | Behavior |
+|---------|----------|
+| `direct_opensim` | Current default path. Uses the repo runtime marker/task spec and runs OpenSim directly in the Pose2Sim environment. |
+| `pose2sim_augmented` | Creates `pose2sim_trial/pose-3d` and `pose2sim_trial/kinematics`, writes a meter TRC, runs Pose2Sim marker augmentation to produce `_LSTM.trc`, and then runs Pose2Sim LSTM kinematics. |
+
 ### Why Foot Markers Matter
 
 The added heel and toe markers help OpenSim IK fit lower-limb and foot posture better, especially in landing and stance phases.
@@ -413,12 +436,36 @@ The exporter consumes the final MOT file, including any post-IK corrected `pelvi
 | `*_ik_raw.mot` | Raw IK result when post-IK correction is enabled |
 | `*_model.osim` | Model with runtime markers |
 | `*_foot_snap_report.json` | Post-IK correction report |
+| `pose2sim_trial/pose-3d/*.trc` | Pose2Sim staging TRC files, including `_LSTM.trc` when the augmentation backend is used |
+| `pose2sim_trial/kinematics/*` | Pose2Sim kinematics workspace artifacts |
 | `graphs/coords/*.png` | TRC marker coordinate plots when `--save_graph` is enabled |
 | `graphs/angles/*.png` | MOT coordinate plots when `--save_graph` is enabled and IK runs |
 | `*.fbx` | Blender/export animation |
 | `processing_report.json` | Combined pipeline summary from `run_pipeline.py` |
+| `mesh_vis/overlay.mp4` | Stage 1 mesh overlay video when `--save-mesh-video` is enabled |
+| `mesh_export/frame_*.ply` | Stage 1 per-frame mesh sequence when `--save-mesh-sequence` is enabled |
 
 `run_pipeline.py` may also emit `keypoints_raw.json` for debugging or compatibility workflows.
+
+## Stage 1 Mesh Outputs
+
+The repository now supports optional mesh sidecar outputs during Stage 1 inference.
+
+- `--save-mesh-video`
+  - writes `mesh_vis/overlay.mp4`
+  - stores the raw SAM3D Body mesh overlaid on the extracted video frames
+- `--save-mesh-sequence`
+  - writes one mesh file per frame under `mesh_export/`
+  - intended for DCC import workflows such as Blender inspection
+- `--mesh-sequence-format {ply,obj}`
+  - controls the mesh file format for `mesh_export/`
+
+These artifacts are Stage 1 sidecars only.
+
+- They do not alter `video_outputs.json`
+- They are not consumed by `run_export.py`
+- They are separate from the rigged FBX/GLB animation path
+- They are generated from a visualization-quality full-refresh mesh pass so the overlay stays closer to the official upstream demo semantics
 
 ---
 
@@ -502,6 +549,7 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69 --skip-
 ```
 
 `run_pipeline.py --visualize` is currently a deprecated compatibility flag and does not produce extra viewer or media outputs.
+Use `--save-mesh-video` or `--save-mesh-sequence` for real Stage 1 mesh outputs.
 
 ### After IK or Blender Changes
 

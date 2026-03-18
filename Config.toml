@@ -1,0 +1,311 @@
+# SAM3D-OpenSim runtime configuration
+#
+# This file is the main user-facing configuration for the pipeline.
+# In most cases you edit this file, then run:
+#
+#   sam3d-opensim --config Config.toml
+#
+# Path notes:
+# - Relative paths are resolved relative to this Config.toml file.
+# - Windows-style paths like "C:/..." are also supported under WSL and will
+#   be translated to "/mnt/c/...".
+# - Use an empty string "" for optional paths that should fall back to
+#   auto-detection or built-in defaults.
+#
+# Precedence:
+# 1. Built-in package defaults
+# 2. Values from this Config.toml
+# 3. Explicit CLI flags
+
+
+[run]
+# Overall entry mode.
+# - "full": run Stage 1 inference, then Stage 2 export
+# - "inference": run only Stage 1 and write video_outputs.json
+# - "export": run only Stage 2 from an existing video_outputs.json
+# - "pipeline": use the in-process compatibility runner
+mode = "full"
+
+# If true, full mode skips Stage 1 and reuses an existing video_outputs.json
+# from output.directory.
+# When this is true, set either:
+# - output.directory to an existing output folder containing video_outputs.json
+# - or input.video_outputs_path so the CLI can infer the output folder
+skip_inference = false
+
+# If true, skip OpenSim inverse kinematics and only export TRC-side outputs.
+skip_ik = false
+
+# If true, skip Blender FBX export even when IK output exists.
+skip_fbx = true
+
+# If true, use SAM3D Body camera translation (cam_t) to track subject movement
+# through space. Best results usually require sam3d.fov_name = "moge2".
+global_translation = false
+
+# Person index to read from video_outputs.json in export mode when the artifact
+# contains multiple people.
+# Usually 0 for the single-person workflow.
+person_index = 0
+
+
+[input]
+# Source video path.
+# Required for:
+# - run.mode = "full"
+# - run.mode = "inference"
+# Can be left empty for:
+# - run.mode = "export"
+# - run.mode = "full" with run.skip_inference = true and an existing output dir
+# You can provide either:
+# - a single video file
+# - a directory containing multiple video files for batch processing
+# Supported batch file extensions currently include:
+#   .mp4, .mov, .avi, .mkv, .m4v, .mpg, .mpeg, .wmv
+# Batch mode is applied only to full / inference / pipeline paths, not export.
+video_path = "videos"
+
+# Existing Stage 1 artifact path.
+# Used mainly for:
+# - run.mode = "export"
+# - run.mode = "full" with run.skip_inference = true
+# Example:
+#   "output_20260317_120000_my_video/video_outputs.json"
+video_outputs_path = ""
+
+# Target FPS used when extracting frames in Stage 1.
+# This also acts as the configured FPS for console-driven export mode.
+# Typical values:
+# - 30.0 for normal video
+# - lower values if you want faster inference and are okay with fewer frames
+fps = 60.0
+
+
+[subject]
+# Subject height in meters.
+# This affects scale-sensitive downstream steps such as OpenSim export.
+height = 1.65
+
+# Subject mass in kilograms.
+# Not every step uses this directly, but keep it accurate for OpenSim-related
+# workflows and future compatibility.
+mass = 70.0
+
+
+[sam3d]
+# Root folder of the external SAM3D Body checkout.
+# Example Windows path:
+#   "C:/Sam3dBody/sam-3d-body"
+sam3d_root = "C:/Sam3dBody/sam-3d-body"
+
+# Path to the SAM3D Body checkpoint file.
+checkpoint = "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/model.ckpt"
+
+# Path to the MHR model file used by SAM3D Body.
+mhr_path = "C:/Sam3dBody/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
+
+# Human detector used before body fitting.
+# Allowed values:
+# - "vitdet": safe default
+# - "yolo11": optional alternative detector
+# - "sam3": use SAM3-based detector flow
+# - "none": disable detector stage if your setup supports it
+detector_name = "sam3"
+
+# Optional explicit detector path.
+# Leave empty to use auto-detection / default behavior for the chosen detector.
+detector_path = ""
+
+# Optional segmentor name.
+# Allowed values:
+# - "none": no segmentation
+# - "sam2": enable segmentation support
+segmentor_name = "none"
+
+# Optional explicit segmentor path.
+# Leave empty to use auto-detection / default behavior.
+segmentor_path = ""
+
+# FOV estimator.
+# Allowed values:
+# - "moge2": recommended when using global translation
+# - "none": disable FOV estimation
+fov_name = "moge2"
+
+# Optional explicit FOV model path.
+# Leave empty to use the default MoGe2 pretrained model / configured default.
+fov_path = ""
+
+# Inference device.
+# Allowed values:
+# - "cuda": recommended when a GPU is available
+# - "cpu": slower, but useful for debugging or non-GPU machines
+device = "cuda"
+
+# Detection confidence threshold for the person bounding box stage.
+# Higher values are stricter.
+bbox_threshold = 0.8
+
+# Non-maximum suppression threshold for detector box filtering.
+nms_threshold = 0.3
+
+# If true, use segmentation masks during inference.
+# Usually only meaningful when segmentor_name is not "none".
+use_mask = false
+
+# Upstream SAM3D Body inference type.
+# Allowed values depend on the upstream tool, but "full" is the normal mode.
+inference_type = "full"
+
+
+[processing]
+# If true, prompt once to pick a person and then track that subject through
+# the clip. This is the recommended default for most single-subject videos.
+single_person = true
+
+# Ground anchoring strategy after coordinate transformation.
+# Allowed values:
+# - "auto": choose behavior automatically from motion/context
+# - "contact_aware": preserve airborne motion and re-anchor on stance
+# - "per_frame_snap": legacy mode; lowest foot point snaps every frame
+ground_alignment_mode = "auto"
+
+# Vertical translation strategy.
+# Allowed values:
+# - "auto": recommended default
+# - "legacy_xz_only": old behavior; use only horizontal translation cues
+# - "hybrid_support_plane": blend support-plane cues with pred_cam_t_y
+vertical_translation_mode = "auto"
+
+# Support-surface selection mode.
+# Allowed values:
+# - "auto": estimate automatically
+# - "manual_roi": let the user select a support-surface region manually
+support_surface_mode = "auto"
+
+# Post-IK stance-phase foot correction mode.
+# Allowed values:
+# - "off": disabled
+# - "auto": automatic application when appropriate
+# - "stance_only": apply only during stance frames
+post_ik_foot_snap_mode = "off"
+
+# Whether temporal smoothing is enabled in the post-processing stage.
+smooth_filter = true
+
+# Butterworth low-pass cutoff frequency in Hz.
+# Lower values = stronger smoothing.
+# Set to 0 only when you explicitly want no smoothing.
+filter_cutoff = 6.0
+
+# Butterworth filter order used by the temporal smoothing step.
+filter_order = 4
+
+# If true, normalize bone lengths over time to reduce frame-to-frame skeleton
+# instability.
+normalize_bones = true
+
+# If true, apply forward-lean correction heuristics.
+correct_forward_lean = true
+
+# Manual forward lean angle in degrees.
+# Leave at 0.0 to rely on the automatic behavior.
+forward_lean_angle = 0.0
+
+
+[opensim]
+# OpenSim / IK backend settings.
+#
+# Important current-state note:
+# - In the current canonical pipeline, ik_backend is actively used.
+# - The values below for model / markers_xml / ik_accuracy / ik_max_iterations
+#   are not yet fully wired through the main run_export.py / run_full_pipeline.py
+#   path.
+# - The current direct_opensim flow still depends heavily on the
+#   Pose2Sim/OpenSim runtime setup discovered at execution time.
+# - So these fields are best understood as intended configuration surface and
+#   future-facing documentation, not as fully enforced runtime controls yet.
+
+# Intended base OpenSim model path.
+# Relative paths are resolved from this Config.toml location.
+# Current status:
+# - Not fully honored by the canonical export/full-pipeline path yet.
+# - The current direct_opensim backend still uses the Pose2Sim/OpenSim setup
+#   found at runtime.
+model = "models/Model_Simple_MHR70.osim"
+
+# Intended marker XML path for runtime marker/task generation.
+# Current status:
+# - Not fully controlling the canonical backend path yet.
+# - Runtime marker behavior still depends largely on repository marker assets
+#   and Pose2Sim/OpenSim-side setup.
+markers_xml = "models/Markers_MHR70.xml"
+
+# IK backend choice.
+# Allowed values:
+# - "direct_opensim": repository OpenSim export path that still relies on
+#   Pose2Sim/OpenSim environment discovery at runtime
+# - "pose2sim_augmented": Pose2Sim augmentation + kinematics path
+# This is the main [opensim] field that is definitely used today.
+ik_backend = "pose2sim_augmented"
+
+# Intended numerical accuracy target for OpenSim IK.
+# Current status:
+# - Not fully wired into the canonical direct_opensim export path.
+# - The current direct_opensim helper still uses its own internal accuracy
+#   setting.
+ik_accuracy = 1.0e-8
+
+# Intended maximum IK solver iterations.
+# Current status:
+# - Not fully wired into the canonical direct_opensim / pose2sim_augmented path.
+# - Kept here so the config surface stays understandable and future-compatible.
+ik_max_iterations = 10000
+
+
+[output]
+# Output directory.
+# If left empty in full/inference mode, the pipeline auto-generates a timestamped
+# folder such as:
+#   output_YYYYMMDD_HHMMSS_video_name
+# If run.skip_inference = true, it is usually best to point this at an existing
+# output folder that already contains video_outputs.json.
+# If input.video_path points to a directory, this value is treated as a base
+# parent directory for batch output, and the pipeline creates one timestamped
+# output subdirectory per video under it.
+directory = ""
+
+# Whether to save TRC marker trajectories.
+save_trc = true
+
+# Whether to save MOT joint-angle output.
+save_mot = true
+
+# Whether to save the scaled / generated OpenSim model artifact when applicable.
+save_scaled_model = true
+
+# Whether to save JSON artifacts produced by the pipeline.
+save_json = true
+
+# Save Stage 1 mesh overlay video under mesh_vis/.
+# Useful for visually checking SAM3D Body mesh alignment.
+save_mesh_video = true
+
+# Save Blender-ready / DCC-friendly FBX animation when the pipeline reaches
+# the export stage successfully.
+save_fbx = false
+
+# Save per-frame mesh files under mesh_export/.
+# Useful when importing the mesh sequence into DCC tools.
+save_mesh_sequence = false
+
+# Mesh sequence export format.
+# Allowed values:
+# - "ply"
+# - "obj"
+mesh_sequence_format = "ply"
+
+# Save graph images under graphs/.
+# TRC coordinate graphs are always eligible.
+# MOT angle graphs are saved only when IK output exists.
+save_graph = true

@@ -26,8 +26,10 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from sam3d_opensim.batch import collect_video_inputs, is_batch_input, resolve_video_output_dir
 from src.pipeline_runner import run_combined_pipeline
 from utils.pipeline_options import (
+    add_boolean_arg,
     add_inference_runtime_args,
     add_processing_args,
     add_subject_args,
@@ -47,15 +49,15 @@ def parse_args(argv=None):
         "--input",
         "-i",
         type=str,
-        required=True,
-        help="Input video file path",
+        default=defaults["input_video_path"],
+        help="Input video file or folder (defaults to input.video_path in config)",
     )
     parser.add_argument(
         "--output",
         "-o",
         type=str,
-        default=None,
-        help="Output directory (default: auto-generated)",
+        default=defaults["output_dir"],
+        help="Output directory (default: auto-generated or output.directory in config)",
     )
     add_subject_args(parser, defaults)
     add_inference_runtime_args(
@@ -64,25 +66,29 @@ def parse_args(argv=None):
         include_device=True,
         include_config=True,
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--skip-ik",
-        action="store_true",
-        help="Skip inverse kinematics (only generate TRC)",
+        default=defaults["skip_ik"],
+        help_text="Skip inverse kinematics (only generate TRC)",
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--visualize",
-        action="store_true",
-        help="Deprecated no-op flag kept for compatibility",
+        default=False,
+        help_text="Deprecated no-op flag kept for compatibility",
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--save-fbx",
-        action="store_true",
-        help="Export FBX skeleton animation (requires Blender)",
+        default=defaults["save_fbx"],
+        help_text="Export FBX skeleton animation (requires Blender)",
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--global-translation",
-        action="store_true",
-        help="Apply global translation from cam_t (track walking movement)",
+        default=defaults["global_translation"],
+        help_text="Apply global translation from cam_t (track walking movement)",
     )
     add_processing_args(parser, defaults)
 
@@ -111,7 +117,11 @@ def run_pipeline(
     single_person: Optional[bool] = None,
     support_surface_mode: Optional[str] = None,
     post_ik_foot_snap_mode: Optional[str] = None,
+    ik_backend: Optional[str] = None,
     save_graph: bool = False,
+    save_mesh_video: bool = False,
+    save_mesh_sequence: bool = False,
+    mesh_sequence_format: str = "ply",
 ) -> dict:
     """Backward-compatible wrapper over the shared in-process pipeline runner."""
     return run_combined_pipeline(
@@ -137,7 +147,11 @@ def run_pipeline(
         single_person=single_person,
         support_surface_mode=support_surface_mode,
         post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        ik_backend=ik_backend,
         save_graph=save_graph,
+        save_mesh_video=save_mesh_video,
+        save_mesh_sequence=save_mesh_sequence,
+        mesh_sequence_format=mesh_sequence_format,
     )
 
 
@@ -146,43 +160,61 @@ def main():
     args = parse_args()
 
     # Validate input
-    if not Path(args.input).exists():
-        print(f"Error: Input file not found: {args.input}")
+    if not args.input:
+        print("Error: Input file not provided. Set --input or input.video_path in Config.toml.")
         sys.exit(1)
 
-    # Run pipeline
     try:
-        results = run_pipeline(
-            input_path=args.input,
-            subject_height=args.height,
-            subject_mass=args.mass,
-            output_dir=args.output,
-            target_fps=args.fps,
-            device=args.device,
-            config_path=args.config,
-            skip_ik=args.skip_ik,
-            visualize=args.visualize,
-            save_fbx=args.save_fbx,
-            global_translation=args.global_translation,
-            detector=args.detector,
-            segmentor=args.segmentor,
-            fov=args.fov,
-            use_mask=args.use_mask,
-            smooth_cutoff=args.smooth,
-            ground_alignment_mode=args.ground_alignment_mode,
-            vertical_translation_mode=args.vertical_translation_mode,
-            single_person=args.single_person,
-            support_surface_mode=args.support_surface_mode,
-            post_ik_foot_snap_mode=args.post_ik_foot_snap,
-            save_graph=args.save_graph,
-        )
+        input_paths = collect_video_inputs(args.input)
+        batch_mode = is_batch_input(args.input)
 
-        if not results["success"]:
-            print("Pipeline failed!")
-            sys.exit(1)
+        for input_path in input_paths:
+            output_dir = resolve_video_output_dir(
+                video_path=input_path,
+                configured_output_dir=args.output,
+                batch_mode=batch_mode,
+            )
+            if batch_mode:
+                print(f"\n[BATCH] Processing {input_path.name}")
+
+            results = run_pipeline(
+                input_path=str(input_path),
+                subject_height=args.height,
+                subject_mass=args.mass,
+                output_dir=str(output_dir),
+                target_fps=args.fps,
+                device=args.device,
+                config_path=args.config,
+                skip_ik=args.skip_ik,
+                visualize=args.visualize,
+                save_fbx=args.save_fbx,
+                global_translation=args.global_translation,
+                detector=args.detector,
+                segmentor=args.segmentor,
+                fov=args.fov,
+                use_mask=args.use_mask,
+                smooth_cutoff=args.smooth,
+                ground_alignment_mode=args.ground_alignment_mode,
+                vertical_translation_mode=args.vertical_translation_mode,
+                single_person=args.single_person,
+                support_surface_mode=args.support_surface_mode,
+                post_ik_foot_snap_mode=args.post_ik_foot_snap,
+                ik_backend=args.ik_backend,
+                save_graph=args.save_graph,
+                save_mesh_video=args.save_mesh_video,
+                save_mesh_sequence=args.save_mesh_sequence,
+                mesh_sequence_format=args.mesh_sequence_format,
+            )
+
+            if not results["success"]:
+                print("Pipeline failed!")
+                sys.exit(1)
 
     except KeyboardInterrupt:
         print("\nPipeline interrupted by user")
+        sys.exit(1)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
         sys.exit(1)
     except Exception as e:
         print(f"Pipeline error: {e}")

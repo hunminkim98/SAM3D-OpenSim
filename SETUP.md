@@ -70,17 +70,39 @@ cd Sam3DBodyToOpenSim
 
 ```bash
 conda activate sam_3d_body
-pip install -r requirements.txt
+pip install -e .
 ```
+
+If you plan to use Stage 1 mesh overlay video output with `--save-mesh-video`, ensure the upstream SAM3D Body visualization dependency is also available in the inference environment:
+
+```bash
+conda activate sam_3d_body
+pip install pyrender
+```
+
+If mesh sequence export works but mesh overlay video still fails on Windows, you can optionally try a PyOpenGL backend override for the local renderer:
+
+```bash
+set SAM3D_OPENSIM_MESH_RENDER_PLATFORM=<backend>
+```
+
+This override is only used by the repo-local Stage 1 mesh video renderer and is not required for normal inference or mesh sequence export.
 
 ## Step 7: Verify imports and CLI surface
 
 ```bash
 conda activate sam_3d_body
 python test_imports.py
+sam3d-opensim --help
 python run_inference.py --help
 python run_export.py --help
 python run_full_pipeline.py --help
+```
+
+Edit `Config.toml` in the repository root, then run:
+
+```bash
+sam3d-opensim --config Config.toml
 ```
 
 ## Step 8: Create the `Pose2Sim` environment
@@ -93,6 +115,11 @@ conda activate Pose2Sim
 pip install pose2sim
 python -c "import opensim; print(opensim.GetVersion())"
 ```
+
+This environment is used by both:
+
+- the default `direct_opensim` Stage 2 IK path
+- the `pose2sim_augmented` backend, which runs marker augmentation and LSTM kinematics
 
 ## Step 9: Install Blender
 
@@ -165,6 +192,10 @@ pip install decord psutil ftfy regex triton-windows
 conda activate Pose2Sim
 pip install pose2sim
 ```
+
+### Pose2Sim augmentation backend
+
+When you run `--ik-backend pose2sim_augmented`, Stage 2 creates a `pose2sim_trial/` workspace inside the output directory and writes a separate meter-space TRC for Pose2Sim augmentation. The canonical root TRC exported by this repo remains the standard downstream artifact.
 
 ### Blender not found
 

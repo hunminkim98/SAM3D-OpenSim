@@ -117,6 +117,37 @@ class SAM3DInference:
 
         return inter_area / union
 
+    def _match_output_index_to_bbox(
+        self,
+        outputs: List[Dict[str, Any]],
+        reference_bbox: Optional[np.ndarray],
+    ) -> Optional[int]:
+        """Match the best output to a reference bbox using the standard tracking score."""
+        if not outputs:
+            return None
+
+        if reference_bbox is None:
+            return 0
+
+        best_index = None
+        best_score = None
+
+        for index, output in enumerate(outputs):
+            bbox = self._extract_bbox(output)
+            if bbox is None:
+                continue
+
+            score = (
+                self._bbox_iou(reference_bbox, bbox),
+                -self._bbox_center_distance(reference_bbox, bbox),
+                self._bbox_area(bbox),
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_index = index
+
+        return 0 if best_index is None else best_index
+
     @staticmethod
     def _format_bbox(bbox: Optional[np.ndarray]) -> Optional[list[float]]:
         if bbox is None:
@@ -858,30 +889,7 @@ class SAM3DInference:
         outputs: List[Dict[str, Any]],
     ) -> Optional[int]:
         """Match the previously selected person to the current frame."""
-        if not outputs:
-            return None
-
-        if self.selected_bbox_prev is None:
-            return 0
-
-        best_index = None
-        best_score = None
-
-        for index, output in enumerate(outputs):
-            bbox = self._extract_bbox(output)
-            if bbox is None:
-                continue
-
-            score = (
-                self._bbox_iou(self.selected_bbox_prev, bbox),
-                -self._bbox_center_distance(self.selected_bbox_prev, bbox),
-                self._bbox_area(bbox),
-            )
-            if best_score is None or score > best_score:
-                best_score = score
-                best_index = index
-
-        return 0 if best_index is None else best_index
+        return self._match_output_index_to_bbox(outputs, self.selected_bbox_prev)
 
     def _prepare_component_paths(
         self,
@@ -1004,6 +1012,7 @@ class SAM3DInference:
         self.scene_ground_attempted_frames: set[int] = set()
         self.scene_ground_available_frames = 0
         self.scene_fov_estimator = None
+        self.mesh_visualization_fov_estimator = None
 
         if self.support_surface_mode_requested == "manual_roi" and not self.scene_ground_enabled:
             print(
@@ -1148,6 +1157,7 @@ class SAM3DInference:
                     path=fov_path,
                 )
                 print(f"Loaded FOV estimator: {fov_name}")
+                self.mesh_visualization_fov_estimator = fov_estimator
                 if fov_name == "moge2":
                     self.scene_fov_estimator = fov_estimator
             except Exception as e:
@@ -1312,6 +1322,9 @@ class SAM3DInference:
         image: np.ndarray,
         frame_idx: int = 0,
         bboxes: Optional[np.ndarray] = None,
+        *,
+        use_cached_focal_length: bool = True,
+        force_fov_estimator=None,
     ) -> List[Dict[str, Any]]:
         """
         Process a single frame and extract 3D pose.
@@ -1333,17 +1346,13 @@ class SAM3DInference:
                 - bbox: (4,) bounding box
         """
         # Process image
-        if self.per_frame_logging:
-            outputs = self.estimator.process_one_image(
-                image,
-                bboxes=bboxes,
-                bbox_thr=self.bbox_threshold,
-                nms_thr=self.nms_threshold,
-                use_mask=self.use_mask,
-                inference_type=self.inference_type,
-            )
-        else:
-            with redirect_stdout(io.StringIO()):
+        original_fov_estimator = None
+        if force_fov_estimator is not None and hasattr(self.estimator, "fov_estimator"):
+            original_fov_estimator = self.estimator.fov_estimator
+            self.estimator.fov_estimator = force_fov_estimator
+
+        try:
+            if self.per_frame_logging:
                 outputs = self.estimator.process_one_image(
                     image,
                     bboxes=bboxes,
@@ -1352,9 +1361,22 @@ class SAM3DInference:
                     use_mask=self.use_mask,
                     inference_type=self.inference_type,
                 )
+            else:
+                with redirect_stdout(io.StringIO()):
+                    outputs = self.estimator.process_one_image(
+                        image,
+                        bboxes=bboxes,
+                        bbox_thr=self.bbox_threshold,
+                        nms_thr=self.nms_threshold,
+                        use_mask=self.use_mask,
+                        inference_type=self.inference_type,
+                    )
+        finally:
+            if force_fov_estimator is not None and hasattr(self.estimator, "fov_estimator"):
+                self.estimator.fov_estimator = original_fov_estimator
 
         # Cache focal length from the first successful detection only once.
-        if self._cached_focal_length is None and outputs:
+        if use_cached_focal_length and self._cached_focal_length is None and outputs:
             if "focal_length" in outputs[0]:
                 self._cached_focal_length = outputs[0]["focal_length"]
             # Disable FOV estimator for subsequent frames (expensive)
@@ -1363,12 +1385,93 @@ class SAM3DInference:
                 and self.estimator.fov_estimator is not None
             ):
                 self.estimator.fov_estimator = None
-        elif self._cached_focal_length is not None:
+        elif use_cached_focal_length and self._cached_focal_length is not None:
             # Apply cached focal length to subsequent frames
             for out in outputs:
                 out["focal_length"] = self._cached_focal_length
 
         return outputs
+
+    def process_video_for_mesh_sidecars(
+        self,
+        frame_paths: List[str],
+        progress: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Run a visualization-quality pass for mesh sidecar generation.
+
+        This intentionally bypasses the tracked-bbox fast path and focal-length
+        caching so the rendered mesh more closely matches the official upstream
+        visualization semantics.
+        """
+        import cv2
+
+        mesh_outputs = []
+        iterator = tqdm(frame_paths, desc="Processing mesh sidecar frames") if progress else frame_paths
+
+        reference_bbox = None
+        if self.selected_bbox_first_frame is not None:
+            reference_bbox = np.asarray(self.selected_bbox_first_frame, dtype=np.float32)
+
+        full_refresh_fov_estimator = getattr(self, "mesh_visualization_fov_estimator", None)
+
+        for idx, frame_path in enumerate(iterator):
+            image = cv2.imread(frame_path)
+            if image is None:
+                print(f"Warning: Could not read {frame_path} for mesh visualization")
+                mesh_outputs.append(
+                    {
+                        "frame_idx": idx,
+                        "frame_path": frame_path,
+                        "outputs": [],
+                        "output": None,
+                        "selected_output_index": None,
+                        "people_count": 0,
+                        "inference_mode": "mesh_full_refresh",
+                    }
+                )
+                continue
+
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            outputs = self.process_frame(
+                image,
+                frame_idx=idx,
+                bboxes=None,
+                use_cached_focal_length=False,
+                force_fov_estimator=full_refresh_fov_estimator,
+            )
+
+            selected_output = None
+            selected_output_index = None
+            if self.single_person:
+                selected_output_index = self._match_output_index_to_bbox(outputs, reference_bbox)
+                if (
+                    selected_output_index is None
+                    and self.selected_person_index_first_frame is not None
+                    and self.selected_person_index_first_frame < len(outputs)
+                ):
+                    selected_output_index = self.selected_person_index_first_frame
+
+                if selected_output_index is not None and len(outputs) > selected_output_index:
+                    selected_output = outputs[selected_output_index]
+                    next_bbox = self._extract_bbox(selected_output)
+                    reference_bbox = None if next_bbox is None else next_bbox.copy()
+            else:
+                selected_output = outputs[0] if outputs else None
+                selected_output_index = 0 if outputs else None
+
+            mesh_outputs.append(
+                {
+                    "frame_idx": idx,
+                    "frame_path": frame_path,
+                    "outputs": outputs,
+                    "output": selected_output,
+                    "selected_output_index": selected_output_index,
+                    "people_count": len(outputs),
+                    "inference_mode": "mesh_full_refresh",
+                }
+            )
+
+        return mesh_outputs
 
     def get_selection_metadata(self) -> Dict[str, Any]:
         """Return metadata describing how the tracked person was chosen."""

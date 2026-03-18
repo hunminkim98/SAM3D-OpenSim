@@ -20,7 +20,7 @@ from src.opensim_marker_spec import (
     get_runtime_ik_marker_specs,
 )
 from src.post_ik_foot_snap import apply_post_ik_foot_snap
-from utils.windows_paths import require_conda_env_python, require_pose2sim_setup
+from utils.windows_paths import require_active_or_conda_env_python, require_pose2sim_setup
 
 
 def run_external_opensim_ik(
@@ -39,7 +39,7 @@ def run_external_opensim_ik(
     trc_path = Path(trc_path).resolve()
     output_dir = Path(output_dir).resolve()
 
-    opensim_python = require_conda_env_python(
+    opensim_python = require_active_or_conda_env_python(
         "Pose2Sim",
         override_vars=("SAM3D_OPENSIM_OPENSIM_PYTHON", "OPENSIM_PYTHON"),
     )
@@ -274,8 +274,8 @@ class OpenSimIK:
     ) -> Dict[str, Any]:
         """Run IK using Pose2Sim."""
         try:
-            from pose2sim import Pose2Sim
-            from pose2sim.Utilities import trc_from_mot_osim
+            from Pose2Sim import Pose2Sim
+            from Pose2Sim.Utilities import trc_from_mot_osim
         except ImportError:
             print("Pose2Sim not found, falling back to direct OpenSim IK")
             return self._run_opensim_ik(

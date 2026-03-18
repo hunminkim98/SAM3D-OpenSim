@@ -5,12 +5,13 @@ Practical command guide for the current canonical pipeline.
 ## Quick Start
 
 ```bash
-conda activate sam_3d_body
-cd C:\Sam3DBodyToOpenSim
-
-python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector sam3 --fov moge2 --global-translation
+pip install -e .
+sam3d-opensim --config Config.toml
 ```
+
+The root scripts are still available, but `sam3d-opensim --config Config.toml` is now the canonical command.
+
+`input.video_path` can be a single file or a directory. If you point it at a directory, the pipeline runs each supported video in that folder as a batch job and writes a separate output folder per video.
 
 ## Recommended Workflows
 
@@ -19,8 +20,7 @@ python run_full_pipeline.py --input video.mp4 --height 1.69 \
 Best when processing a clip for the first time:
 
 ```bash
-python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector sam3 --fov moge2 --global-translation
+sam3d-opensim --config Config.toml
 ```
 
 ### Two-stage workflow
@@ -111,26 +111,7 @@ It may additionally write:
 Canonical two-stage orchestrator:
 
 ```bash
-python run_full_pipeline.py \
-    --input VIDEO_PATH \
-    --height HEIGHT \
-    --mass MASS \
-    --output OUTPUT_DIR \
-    --fps FPS \
-    --detector DETECTOR \
-    --segmentor SEGMENTOR \
-    --fov FOV \
-    --use-mask \
-    --single_person true \
-    --support-surface-mode auto \
-    --smooth CUTOFF \
-    --ground-alignment-mode auto \
-    --vertical-translation-mode auto \
-    --post-ik-foot-snap off \
-    --global-translation \
-    --skip-inference \
-    --skip-ik \
-    --skip-fbx
+sam3d-opensim --config Config.toml
 ```
 
 ### `run_inference.py`
@@ -226,6 +207,11 @@ If your install lives elsewhere, set `BLENDER_PATH` or `SAM3D_OPENSIM_BLENDER_PA
 ### `--visualize` has no visible effect
 
 `run_pipeline.py --visualize` is currently a deprecated no-op.
+
+For actual Stage 1 mesh outputs, use:
+
+- `--save-mesh-video` for `mesh_vis/overlay.mp4`
+- `--save-mesh-sequence` for `mesh_export/frame_*.ply` or `.obj`
 
 ### `graphs/angles/` is missing
 

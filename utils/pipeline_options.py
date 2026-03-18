@@ -16,6 +16,9 @@ SUPPORT_SURFACE_CHOICES = ("auto", "manual_roi")
 GROUND_ALIGNMENT_CHOICES = ("auto", "contact_aware", "per_frame_snap")
 VERTICAL_TRANSLATION_CHOICES = ("auto", "legacy_xz_only", "hybrid_support_plane")
 POST_IK_FOOT_SNAP_CHOICES = ("off", "auto", "stance_only")
+IK_BACKEND_CHOICES = ("direct_opensim", "pose2sim_augmented")
+MESH_SEQUENCE_FORMAT_CHOICES = ("ply", "obj")
+RUN_MODE_CHOICES = ("full", "inference", "export", "pipeline")
 
 
 def _display_default(value: Any, *, none_label: str = "none") -> str:
@@ -65,22 +68,89 @@ def _normalize_bool(value: Any, *, fallback: bool) -> bool:
     return fallback
 
 
+def add_boolean_arg(
+    parser: argparse.ArgumentParser,
+    flag: str,
+    *,
+    default: bool,
+    help_text: str,
+) -> None:
+    parser.add_argument(
+        flag,
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=default,
+        help=f"{help_text} (default: {str(bool(default)).lower()})",
+    )
+
+
 def load_cli_defaults(config_path: str | None = None) -> dict[str, Any]:
     """Load repo-local CLI defaults from config, falling back to current behavior."""
     try:
         config = load_config(config_path)
     except FileNotFoundError:
+        if config_path is not None:
+            raise
         config = {}
 
     input_cfg = config.get("input", {})
+    run_cfg = config.get("run", {})
     subject_cfg = config.get("subject", {})
     sam3d_cfg = config.get("sam3d", {})
     processing_cfg = config.get("processing", {})
+    opensim_cfg = config.get("opensim", {})
+    output_cfg = config.get("output", {})
+
+    raw_ik_backend = opensim_cfg.get("ik_backend")
+    raw_mode = run_cfg.get("mode")
+    if raw_mode is None:
+        mode = "full"
+    else:
+        mode = str(raw_mode).strip().lower()
+        if mode not in RUN_MODE_CHOICES:
+            raise ValueError(
+                "Unsupported run.mode value in config: "
+                f"{raw_mode!r}. Expected one of {RUN_MODE_CHOICES}."
+            )
+    if raw_ik_backend is None:
+        ik_backend = "direct_opensim"
+    else:
+        ik_backend = str(raw_ik_backend).strip().lower()
+        if ik_backend not in IK_BACKEND_CHOICES:
+            raise ValueError(
+                "Unsupported opensim.ik_backend value in config: "
+                f"{raw_ik_backend!r}. Expected one of {IK_BACKEND_CHOICES}."
+            )
+
+    legacy_save_mesh_obj = _normalize_bool(
+        output_cfg.get("save_mesh_obj"),
+        fallback=False,
+    )
+    raw_mesh_sequence_format = output_cfg.get("mesh_sequence_format")
+    if raw_mesh_sequence_format is None and legacy_save_mesh_obj:
+        raw_mesh_sequence_format = "obj"
+    mesh_sequence_format = _normalize_choice(
+        raw_mesh_sequence_format,
+        allowed=MESH_SEQUENCE_FORMAT_CHOICES,
+        fallback="ply",
+    )
+    save_fbx = _normalize_bool(
+        output_cfg.get("save_fbx"),
+        fallback=False,
+    )
+    skip_fbx = _normalize_bool(
+        run_cfg.get("skip_fbx"),
+        fallback=not save_fbx,
+    )
 
     return {
         "fps": float(input_cfg.get("fps", 30.0)),
+        "input_video_path": input_cfg.get("video_path"),
+        "input_video_outputs_path": input_cfg.get("video_outputs_path"),
         "height": float(subject_cfg.get("height", 1.75)),
         "mass": float(subject_cfg.get("mass", 70.0)),
+        "mode": mode,
         "device": _normalize_choice(
             sam3d_cfg.get("device"),
             allowed=("cuda", "cpu"),
@@ -100,6 +170,10 @@ def load_cli_defaults(config_path: str | None = None) -> dict[str, Any]:
             sam3d_cfg.get("fov_name"),
             allowed=FOV_CHOICES,
             fallback="moge2",
+        ),
+        "use_mask": _normalize_bool(
+            sam3d_cfg.get("use_mask"),
+            fallback=False,
         ),
         "single_person": _normalize_bool(
             processing_cfg.get("single_person"),
@@ -126,6 +200,45 @@ def load_cli_defaults(config_path: str | None = None) -> dict[str, Any]:
             allowed=POST_IK_FOOT_SNAP_CHOICES,
             fallback="off",
         ),
+        "ik_backend": ik_backend,
+        "output_dir": output_cfg.get("directory"),
+        "skip_inference": _normalize_bool(
+            run_cfg.get("skip_inference"),
+            fallback=False,
+        ),
+        "skip_ik": _normalize_bool(
+            run_cfg.get("skip_ik"),
+            fallback=False,
+        ),
+        "skip_fbx": _normalize_bool(
+            run_cfg.get("skip_fbx"),
+            fallback=skip_fbx,
+        ),
+        "global_translation": _normalize_bool(
+            run_cfg.get("global_translation"),
+            fallback=False,
+        ),
+        "person_idx": int(run_cfg.get("person_index", 0)),
+        "save_mesh_video": _normalize_bool(
+            output_cfg.get("save_mesh_video"),
+            fallback=_normalize_bool(
+                output_cfg.get("save_visualization"),
+                fallback=False,
+            ),
+        ),
+        "save_mesh_sequence": _normalize_bool(
+            output_cfg.get("save_mesh_sequence"),
+            fallback=_normalize_bool(
+                output_cfg.get("save_mesh_obj"),
+                fallback=False,
+            ),
+        ),
+        "save_fbx": save_fbx,
+        "save_graph": _normalize_bool(
+            output_cfg.get("save_graph"),
+            fallback=False,
+        ),
+        "mesh_sequence_format": mesh_sequence_format,
     }
 
 
@@ -209,10 +322,11 @@ def add_inference_runtime_args(
             f"(default: {_display_default(defaults['fov'])})"
         ),
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--use-mask",
-        action="store_true",
-        help="Use segmentation mask (requires segmentor)",
+        default=defaults["use_mask"],
+        help_text="Use segmentation mask (requires segmentor)",
     )
     parser.add_argument(
         "--single_person",
@@ -234,12 +348,52 @@ def add_inference_runtime_args(
             f"(default: {_display_default(defaults['support_surface_mode'], none_label='auto')})"
         ),
     )
+    parser.add_argument(
+        "--save-mesh-video",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=defaults["save_mesh_video"],
+        help=(
+            "Save Stage 1 mesh overlay video under mesh_vis/overlay.mp4 "
+            f"(default: {str(bool(defaults['save_mesh_video'])).lower()})"
+        ),
+    )
+    parser.add_argument(
+        "--save-mesh-sequence",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=defaults["save_mesh_sequence"],
+        help=(
+            "Save per-frame mesh files for DCC import under mesh_export/ "
+            f"(default: {str(bool(defaults['save_mesh_sequence'])).lower()})"
+        ),
+    )
+    parser.add_argument(
+        "--mesh-sequence-format",
+        choices=MESH_SEQUENCE_FORMAT_CHOICES,
+        default=defaults["mesh_sequence_format"],
+        help=(
+            "Mesh export format for --save-mesh-sequence "
+            f"(default: {defaults['mesh_sequence_format']})"
+        ),
+    )
 
 
 def add_processing_args(
     parser: argparse.ArgumentParser,
     defaults: dict[str, Any],
 ) -> None:
+    parser.add_argument(
+        "--ik-backend",
+        choices=IK_BACKEND_CHOICES,
+        default=defaults["ik_backend"],
+        help=(
+            "IK backend selection "
+            f"(default: {defaults['ik_backend']})"
+        ),
+    )
     parser.add_argument(
         "--smooth",
         type=float,
@@ -276,8 +430,9 @@ def add_processing_args(
             f"(default: {defaults['post_ik_foot_snap_mode']})"
         ),
     )
-    parser.add_argument(
+    add_boolean_arg(
+        parser,
         "--save_graph",
-        action="store_true",
-        help="Save TRC coordinate and MOT angle graphs under graphs/",
+        default=defaults["save_graph"],
+        help_text="Save TRC coordinate and MOT angle graphs under graphs/",
     )

@@ -60,6 +60,7 @@ opensim:
   markers_xml: "models/Markers_MHR70.xml"
 
   # IK settings
+  ik_backend: direct_opensim  # direct_opensim or pose2sim_augmented
   ik_accuracy: 1.0e-5
   ik_max_iterations: 1000
 
@@ -73,6 +74,9 @@ output:
   save_json: true  # Raw keypoint data
 
   # Optional outputs
-  save_visualization: false
+  save_visualization: false  # Legacy alias for save_mesh_video
+  save_mesh_video: false  # Save Stage 1 mesh overlay video under mesh_vis/
   save_fbx: false  # Requires Blender
-  save_mesh_obj: false  # Save mesh per frame (large files)
+  save_mesh_obj: false  # Legacy alias for save_mesh_sequence with obj format
+  save_mesh_sequence: false  # Save per-frame mesh files for DCC import
+  mesh_sequence_format: ply  # ply or obj

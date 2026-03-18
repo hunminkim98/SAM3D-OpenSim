@@ -14,6 +14,8 @@ Video
      -> frames/
      -> video_outputs.json
      -> inference_meta.json
+     -> mesh_vis/overlay.mp4         # optional Stage 1 mesh overlay video
+     -> mesh_export/frame_*.ply      # optional Stage 1 mesh sequence
   -> run_export.py
      -> markers_*.trc
      -> *_ik.mot
@@ -27,6 +29,19 @@ The root entrypoints now delegate to shared orchestration helpers:
 - `src/pipeline_runner.py` for in-process Stage 1 + Stage 2 composition
 - `src/subprocess_pipeline_runner.py` for multi-environment subprocess orchestration
 - `src/pipeline_runtime_common.py` for shared runtime option resolution, output-directory handling, and summary formatting
+
+## Config.toml CLI
+
+Install the repo in editable mode and run the pipeline through the new console command:
+
+```bash
+pip install -e .
+sam3d-opensim --config Config.toml
+```
+
+`Config.toml` is the user-facing place to manage input paths, subject values, runtime mode, detector/FOV settings, smoothing, skip flags, and export defaults. The legacy root scripts still work and also accept `--config`.
+
+`input.video_path` in `Config.toml` can now point to either a single video file or a folder of videos for batch processing. When you use a folder, the pipeline runs once per video and creates a separate output directory for each clip.
 
 ## Key Features
 
@@ -189,8 +204,23 @@ is `config/marker_mapping.yaml`.
 ### Full Pipeline
 
 ```bash
-python run_full_pipeline.py --input video.mp4 --height 1.69 \
-    --detector sam3 --fov moge2 --global-translation
+sam3d-opensim --config Config.toml
+```
+
+Equivalent legacy command:
+
+```bash
+python run_full_pipeline.py --config Config.toml
+```
+
+Batch example:
+
+```toml
+[input]
+video_path = "D:/clips/session_01"
+
+[output]
+directory = "D:/clips/session_01_outputs"
 ```
 
 ### Full Pipeline With Manual Support Surface
@@ -211,6 +241,13 @@ Stage 1, slow, run once:
 python run_inference.py --input video.mp4 --detector sam3 --fov moge2
 ```
 
+Stage 1 with mesh overlay video and Blender-importable mesh sequence:
+
+```bash
+python run_inference.py --input video.mp4 --detector sam3 --fov moge2 \
+    --save-mesh-video --save-mesh-sequence
+```
+
 Stage 2, fast, re-run as needed:
 
 ```bash
@@ -219,6 +256,13 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69 \
     --ground-alignment-mode contact_aware \
     --vertical-translation-mode hybrid_support_plane \
     --save_graph
+```
+
+Stage 2 with Pose2Sim marker augmentation:
+
+```bash
+python run_export.py --input output_dir/video_outputs.json --height 1.69 \
+    --ik-backend pose2sim_augmented --skip-fbx
 ```
 
 ### CPU Inference
@@ -247,12 +291,16 @@ python run_export.py --input output_dir/video_outputs.json --height 1.69
 | `--single_person` | Prompt once and track a single person | `true` |
 | `--support-surface-mode` | `auto`, `manual_roi` | config default (`auto`) |
 | `--use-mask` | Use segmentation masks when available | `false` |
+| `--save-mesh-video` | Save Stage 1 mesh overlay video under `mesh_vis/overlay.mp4` | `false` |
+| `--save-mesh-sequence` | Save per-frame mesh files under `mesh_export/` | `false` |
+| `--mesh-sequence-format` | `ply`, `obj` for `--save-mesh-sequence` | `ply` |
 
 ### Export / Motion Reconstruction
 
 | Flag | Meaning | Default |
 |------|---------|---------|
 | `--global-translation` | Apply `cam_t` translation | `false` |
+| `--ik-backend` | `direct_opensim`, `pose2sim_augmented` | `direct_opensim` |
 | `--smooth` | Butterworth cutoff frequency in Hz | `6.0` |
 | `--ground-alignment-mode` | `auto`, `contact_aware`, `per_frame_snap` | `auto` |
 | `--vertical-translation-mode` | `auto`, `legacy_xz_only`, `hybrid_support_plane` | `auto` |
@@ -270,6 +318,8 @@ output_YYYYMMDD_HHMMSS_<video>/
 ├── frames/                        # Extracted video frames
 ├── video_outputs.json             # Canonical SAM3D per-frame outputs
 ├── inference_meta.json            # FPS, video info, selection, scene-ground metadata
+├── mesh_vis/overlay.mp4           # Stage 1 mesh overlay video when --save-mesh-video is enabled
+├── mesh_export/frame_*.ply        # Stage 1 per-frame mesh files when --save-mesh-sequence is enabled
 ├── post_ik_contact_meta.json      # Stance/flight metadata used by post-IK correction
 ├── markers_*.trc                  # OpenSim marker trajectories
 ├── *_ik.mot                       # OpenSim IK result
@@ -284,19 +334,26 @@ output_YYYYMMDD_HHMMSS_<video>/
 Notes:
 
 - `run_inference.py` writes `video_outputs.json` and `inference_meta.json`
+- `run_inference.py` can additionally write `mesh_vis/overlay.mp4` and `mesh_export/` as Stage 1 sidecar outputs
+- mesh sidecars are generated from a visualization-quality full-refresh pass so they can stay closer to the official SAM3D Body demo semantics
 - `run_export.py` consumes those files and writes the downstream artifacts
 - `run_pipeline.py` may additionally write `keypoints_raw.json` and `processing_report.json`
 - `run_full_pipeline.py` stays a thin subprocess wrapper and does not add extra in-process reporting artifacts
 - with `--save_graph`, coordinate plots are written after TRC export; angle plots are written only when IK produces a MOT file
+- with `--ik-backend pose2sim_augmented`, Stage 2 also creates `pose2sim_trial/pose-3d` and `pose2sim_trial/kinematics` and runs Pose2Sim marker augmentation before LSTM kinematics
 
 ## Practical Guidance
 
 - Use `--detector sam3 --fov moge2` for the best overall Stage 1 quality.
+- Use `--save-mesh-video` when you want a quick sanity-check video of raw SAM3D mesh quality before any OpenSim export.
+- Use `--save-mesh-sequence --mesh-sequence-format ply` when you want per-frame meshes that Blender can import directly.
+- Expect `--save-mesh-video` to be slower than normal inference because it bypasses the tracked-bbox fast path and focal-length cache for the mesh sidecar pass.
 - Use `--global-translation` only when subject motion through space matters.
 - Use `--support-surface-mode manual_roi` when the contact plane is not the room floor, for example treadmill, box, or platform scenes.
 - Use `--ground-alignment-mode contact_aware` for jumps or flight phases.
 - Use `--vertical-translation-mode hybrid_support_plane` when support-surface grounding is available.
 - Use `--post-ik-foot-snap stance_only` if the IK result still shows visible stance-phase hover.
+- Use `--ik-backend pose2sim_augmented` only when you explicitly want the Pose2Sim marker augmentation + LSTM IK path. The default `direct_opensim` path keeps the repo's current runtime marker/task flow.
 
 ## Environments
 
@@ -329,7 +386,16 @@ For export-stage changes, the fastest smoke test is:
 python run_export.py --input output_dir/video_outputs.json --height 1.69 --skip-ik --skip-fbx
 ```
 
+For the Pose2Sim augmentation backend, the fastest smoke test is:
+
+```bash
+python run_export.py --input output_dir/video_outputs.json --height 1.69 \
+    --ik-backend pose2sim_augmented --skip-fbx
+```
+
 `run_pipeline.py --visualize` is currently a deprecated compatibility flag and does not generate extra outputs.
+
+Use `--save-mesh-video` or `--save-mesh-sequence` instead when you want real Stage 1 mesh artifacts.
 
 ## Documentation
 

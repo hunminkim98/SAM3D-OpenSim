@@ -38,6 +38,7 @@ def run_export_stage(
     ground_alignment_mode: str = "auto",
     vertical_translation_mode: str = "auto",
     post_ik_foot_snap_mode: str = "off",
+    ik_backend: str = "direct_opensim",
     save_graph: bool = False,
     show_header: bool = True,
     header_title: str = "SAM3D Body Export to OpenSim",
@@ -62,6 +63,7 @@ def run_export_stage(
         print(f"Global translation: {'ENABLED' if global_translation else 'disabled'}")
         print(f"Ground alignment: {ground_alignment_mode}")
         print(f"Vertical translation: {vertical_translation_mode}")
+        print(f"IK backend: {ik_backend}")
         print(f"Post-IK foot snap: {post_ik_foot_snap_mode}")
         print(f"{'=' * 60}\n")
 
@@ -192,23 +194,44 @@ def run_export_stage(
         "trc": str(trc_path),
         "mot": None,
         "fbx": None,
+        "ik_backend": ik_backend,
         "ground_alignment": ground_alignment_info,
         "post_ik_contact_meta": str(post_ik_contact_meta_path),
+        "pose2sim_workspace": None,
+        "pose2sim_augmented_trc": None,
         "graph_coords_dir": None,
         "graph_angles_dir": None,
     }
 
-    from src.opensim_ik import run_external_opensim_ik
-
     if not skip_ik:
         print(f"\n{_step_label(5, step_total, step_offset)} Running OpenSim IK...")
-        mot_path = run_external_opensim_ik(
-            trc_path=trc_path,
-            output_dir=output_dir,
-            project_root=project_root,
-            post_ik_foot_snap_mode=post_ik_foot_snap_mode,
-        )
-        results["mot"] = str(mot_path) if mot_path else None
+        if ik_backend == "pose2sim_augmented":
+            from src.pose2sim_augmentation_runner import run_pose2sim_augmented_ik
+
+            pose2sim_results = run_pose2sim_augmented_ik(
+                markers_m=markers / 1000.0,
+                marker_names=marker_names,
+                fps=fps,
+                trc_stem=trc_path.stem,
+                output_dir=output_dir,
+                project_root=project_root,
+                subject_height=subject_height,
+                subject_mass=subject_mass,
+                post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+            )
+            results["mot"] = pose2sim_results.get("mot")
+            results["pose2sim_workspace"] = pose2sim_results.get("workspace_root")
+            results["pose2sim_augmented_trc"] = pose2sim_results.get("augmented_trc")
+        else:
+            from src.opensim_ik import run_external_opensim_ik
+
+            mot_path = run_external_opensim_ik(
+                trc_path=trc_path,
+                output_dir=output_dir,
+                project_root=project_root,
+                post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+            )
+            results["mot"] = str(mot_path) if mot_path else None
     else:
         print(f"\n{_step_label(5, step_total, step_offset)} Skipping OpenSim IK")
 

@@ -19,6 +19,10 @@ def _append_optional_arg(cmd: list[str], flag: str, value) -> None:
         cmd.extend([flag, str(value)])
 
 
+def _append_bool_arg(cmd: list[str], flag: str, value: bool) -> None:
+    cmd.extend([flag, str(bool(value)).lower()])
+
+
 def _discover_output_paths(output_dir: Path) -> dict[str, Optional[Path]]:
     return {
         "trc": next(iter(sorted(output_dir.glob("*.trc"))), None),
@@ -32,6 +36,7 @@ def run_stage1_subprocess(
     project_root: Path,
     input_path: Path,
     output_dir: Path,
+    config_path: Optional[str] = None,
     fps: float,
     detector: str,
     segmentor: Optional[str],
@@ -39,6 +44,9 @@ def run_stage1_subprocess(
     use_mask: bool,
     single_person: bool,
     support_surface_mode: str,
+    save_mesh_video: bool,
+    save_mesh_sequence: bool,
+    mesh_sequence_format: str,
     inference_python: Optional[str | Path] = None,
 ) -> Path:
     """Run canonical Stage 1 in the SAM3D inference environment."""
@@ -55,7 +63,8 @@ def run_stage1_subprocess(
 
     cmd = [
         str(inference_python),
-        str(project_root / "run_inference.py"),
+        "-m",
+        "run_inference",
         "--input",
         str(input_path),
         "--output",
@@ -66,17 +75,24 @@ def run_stage1_subprocess(
         detector,
         "--fov",
         fov,
-        "--single_person",
-        str(bool(single_person)).lower(),
     ]
-    _append_optional_arg(cmd, "--segmentor", segmentor)
+    _append_bool_arg(cmd, "--single_person", single_person)
+    _append_bool_arg(cmd, "--use-mask", use_mask)
+    _append_bool_arg(cmd, "--save-mesh-video", save_mesh_video)
+    _append_bool_arg(cmd, "--save-mesh-sequence", save_mesh_sequence)
+    _append_optional_arg(cmd, "--config", config_path)
+    _append_optional_arg(cmd, "--segmentor", segmentor or "none")
     _append_optional_arg(cmd, "--support-surface-mode", support_surface_mode)
-    if use_mask:
-        cmd.append("--use-mask")
+    _append_optional_arg(cmd, "--mesh-sequence-format", mesh_sequence_format)
 
     print(f"  Detector: {detector}, FOV: {fov}, Segmentor: {segmentor or 'none'}")
     print(f"  Single-person selection: {'ENABLED' if single_person else 'disabled'}")
     print(f"  Support surface: {support_surface_mode}")
+    print(f"  Save mesh video: {str(bool(save_mesh_video)).lower()}")
+    print(
+        "  Save mesh sequence: "
+        f"{str(bool(save_mesh_sequence)).lower()} ({mesh_sequence_format})"
+    )
     print(f"  Python: {inference_python}")
 
     result = subprocess.run(cmd, cwd=str(project_root))
@@ -95,12 +111,14 @@ def run_stage2_subprocess(
     current_python: str | Path,
     json_path: Path,
     output_dir: Path,
+    config_path: Optional[str] = None,
     subject_height: float,
     subject_mass: float,
     smooth: float,
     ground_alignment_mode: str,
     vertical_translation_mode: str,
     post_ik_foot_snap_mode: str,
+    ik_backend: str = "direct_opensim",
     save_graph: bool,
     global_translation: bool,
     skip_ik: bool,
@@ -113,7 +131,8 @@ def run_stage2_subprocess(
 
     cmd = [
         str(current_python),
-        str(project_root / "run_export.py"),
+        "-m",
+        "run_export",
         "--input",
         str(json_path),
         "--output",
@@ -130,15 +149,14 @@ def run_stage2_subprocess(
         vertical_translation_mode,
         "--post-ik-foot-snap",
         post_ik_foot_snap_mode,
+        "--ik-backend",
+        ik_backend,
     ]
-    if save_graph:
-        cmd.append("--save_graph")
-    if global_translation:
-        cmd.append("--global-translation")
-    if skip_ik:
-        cmd.append("--skip-ik")
-    if skip_fbx:
-        cmd.append("--skip-fbx")
+    _append_optional_arg(cmd, "--config", config_path)
+    _append_bool_arg(cmd, "--save_graph", save_graph)
+    _append_bool_arg(cmd, "--global-translation", global_translation)
+    _append_bool_arg(cmd, "--skip-ik", skip_ik)
+    _append_bool_arg(cmd, "--skip-fbx", skip_fbx)
 
     result = subprocess.run(cmd, cwd=str(project_root))
     if result.returncode != 0:
@@ -150,8 +168,10 @@ def run_stage2_subprocess(
 def run_subprocess_pipeline(
     *,
     project_root: str | Path,
+    workspace_root: Optional[str | Path] = None,
     current_python: str | Path,
-    input_path: str | Path,
+    input_path: str | Path | None,
+    config_path: Optional[str] = None,
     subject_height: float,
     subject_mass: float,
     fps: float,
@@ -161,10 +181,14 @@ def run_subprocess_pipeline(
     use_mask: bool,
     single_person: bool,
     support_surface_mode: str,
+    save_mesh_video: bool,
+    save_mesh_sequence: bool,
+    mesh_sequence_format: str,
     smooth: float,
     ground_alignment_mode: str,
     vertical_translation_mode: str,
     post_ik_foot_snap_mode: str,
+    ik_backend: str = "direct_opensim",
     save_graph: bool,
     global_translation: bool,
     skip_inference: bool,
@@ -175,20 +199,21 @@ def run_subprocess_pipeline(
 ) -> dict[str, Optional[Path]]:
     """Run the canonical two-stage pipeline across two Python environments."""
     project_root = Path(project_root)
-    input_path = Path(input_path)
+    workspace_root = Path(workspace_root) if workspace_root is not None else project_root
+    input_path = Path(input_path) if input_path is not None else None
     current_python = Path(current_python)
 
-    if not input_path.exists():
+    if input_path is not None and not input_path.exists() and not skip_inference:
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     output_dir = resolve_pipeline_output_dir(
         input_path=input_path,
         output_dir=output_dir,
-        base_output_dir=project_root,
+        base_output_dir=workspace_root,
     )
     print_pipeline_banner(
         title="SAM3D Body to OpenSim - Full Pipeline",
-        input_path=input_path,
+        input_path=input_path or "N/A (skip inference)",
         output_dir=output_dir,
         subject_height=subject_height,
         subject_mass=subject_mass,
@@ -198,6 +223,7 @@ def run_subprocess_pipeline(
         ground_alignment_mode=ground_alignment_mode,
         vertical_translation_mode=vertical_translation_mode,
         post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        ik_backend=ik_backend,
         single_person=single_person,
         support_surface_mode=support_surface_mode,
         global_translation=global_translation,
@@ -209,10 +235,13 @@ def run_subprocess_pipeline(
         if not json_path.exists():
             raise FileNotFoundError(f"No existing video_outputs.json found in {output_dir}")
     else:
+        if input_path is None:
+            raise ValueError("input_path is required unless skip_inference is true")
         json_path = run_stage1_subprocess(
             project_root=project_root,
             input_path=input_path,
             output_dir=output_dir,
+            config_path=config_path,
             fps=fps,
             detector=detector,
             segmentor=segmentor,
@@ -220,6 +249,9 @@ def run_subprocess_pipeline(
             use_mask=use_mask,
             single_person=single_person,
             support_surface_mode=support_surface_mode,
+            save_mesh_video=save_mesh_video,
+            save_mesh_sequence=save_mesh_sequence,
+            mesh_sequence_format=mesh_sequence_format,
             inference_python=inference_python,
         )
 
@@ -228,12 +260,14 @@ def run_subprocess_pipeline(
         current_python=current_python,
         json_path=json_path,
         output_dir=output_dir,
+        config_path=config_path,
         subject_height=subject_height,
         subject_mass=subject_mass,
         smooth=smooth,
         ground_alignment_mode=ground_alignment_mode,
         vertical_translation_mode=vertical_translation_mode,
         post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        ik_backend=ik_backend,
         save_graph=save_graph,
         global_translation=global_translation,
         skip_ik=skip_ik,

@@ -16,6 +16,7 @@ from src.pipeline_artifacts import (
     build_video_outputs_from_inference,
     save_inference_artifacts,
 )
+from src.mesh_visualization import save_mesh_sidecars
 
 
 def _step_label(index: int, total: int, offset: int) -> str:
@@ -40,6 +41,9 @@ def run_inference_stage(
     single_person: bool = True,
     support_surface_mode: Optional[str] = None,
     vertical_translation_mode: Optional[str] = None,
+    save_mesh_video: bool = False,
+    save_mesh_sequence: bool = False,
+    mesh_sequence_format: str = "ply",
     save_artifacts: bool = True,
     save_raw_keypoints: bool = False,
     show_header: bool = True,
@@ -148,6 +152,45 @@ def run_inference_stage(
             inference_meta=inference_meta,
             raw_payload=raw_payload,
         )
+
+    if save_mesh_video or save_mesh_sequence:
+        print("\nGenerating Stage 1 mesh sidecar outputs...")
+        print("  Running mesh-quality full-refresh pass (no tracking fast path, no focal cache)...")
+        mesh_frame_outputs = sam3d.process_video_for_mesh_sidecars(
+            frame_paths,
+            progress=True,
+        )
+        mesh_saved_paths = save_mesh_sidecars(
+            output_dir=output_dir,
+            frame_paths=frame_paths,
+            frame_outputs=mesh_frame_outputs,
+            faces=sam3d.faces,
+            fps=actual_fps,
+            single_person=single_person,
+            save_mesh_video=save_mesh_video,
+            save_mesh_sequence_files=save_mesh_sequence,
+            mesh_sequence_format=mesh_sequence_format,
+        )
+        saved_paths.update(mesh_saved_paths)
+        if mesh_saved_paths.get("mesh_video"):
+            print(f"  Saved mesh overlay video: {mesh_saved_paths['mesh_video']}")
+        elif mesh_saved_paths.get("mesh_video_error"):
+            print(
+                "  Warning: Mesh overlay video was requested but could not be generated: "
+                f"{mesh_saved_paths['mesh_video_error']}"
+            )
+        if mesh_saved_paths.get("mesh_sequence_dir"):
+            print(
+                "  Saved mesh sequence: "
+                f"{mesh_saved_paths['mesh_sequence_dir']} "
+                f"({mesh_saved_paths.get('mesh_sequence_count', 0)} files, "
+                f"format={mesh_saved_paths.get('mesh_sequence_format')})"
+            )
+        elif mesh_saved_paths.get("mesh_sequence_error"):
+            print(
+                "  Warning: Mesh sequence export was requested but could not be generated: "
+                f"{mesh_saved_paths['mesh_sequence_error']}"
+            )
 
     return {
         "output_dir": str(output_dir),

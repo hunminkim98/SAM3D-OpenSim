@@ -29,20 +29,61 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.export_stage import run_export_stage
-from utils.pipeline_options import add_processing_args, add_subject_args, load_cli_defaults_from_argv
+from utils.pipeline_options import (
+    add_boolean_arg,
+    add_processing_args,
+    add_subject_args,
+    load_cli_defaults_from_argv,
+)
 
 
 def parse_args(argv=None):
-    defaults = load_cli_defaults_from_argv(argv)
+    defaults = load_cli_defaults_from_argv(argv, include_config=True)
     parser = argparse.ArgumentParser(description="Export SAM3D outputs to OpenSim")
-    parser.add_argument("--input", "-i", required=True, help="video_outputs.json file")
+    parser.add_argument("--config", help="Config file path")
+    parser.add_argument(
+        "--input",
+        "-i",
+        default=defaults["input_video_outputs_path"],
+        help="video_outputs.json file (defaults to input.video_outputs_path in config)",
+    )
     add_subject_args(parser, defaults)
-    parser.add_argument("--output", "-o", help="Output directory (default: same as input)")
-    parser.add_argument("--fps", type=float, help="Override FPS (default: from metadata)")
-    parser.add_argument("--global-translation", action="store_true", help="Track global movement")
-    parser.add_argument("--skip-ik", action="store_true", help="Skip OpenSim IK")
-    parser.add_argument("--skip-fbx", action="store_true", help="Skip FBX export")
-    parser.add_argument("--person", type=int, default=0, help="Person index if multiple detected")
+    parser.add_argument(
+        "--output",
+        "-o",
+        default=defaults["output_dir"],
+        help="Output directory (default: same as input or output.directory in config)",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="FPS override (default: from metadata)",
+    )
+    add_boolean_arg(
+        parser,
+        "--global-translation",
+        default=defaults["global_translation"],
+        help_text="Track global movement",
+    )
+    add_boolean_arg(
+        parser,
+        "--skip-ik",
+        default=defaults["skip_ik"],
+        help_text="Skip OpenSim IK",
+    )
+    add_boolean_arg(
+        parser,
+        "--skip-fbx",
+        default=defaults["skip_fbx"],
+        help_text="Skip FBX export",
+    )
+    parser.add_argument(
+        "--person",
+        type=int,
+        default=defaults["person_idx"],
+        help="Person index if multiple detected",
+    )
     add_processing_args(parser, defaults)
     return parser.parse_args(argv)
 
@@ -60,6 +101,7 @@ def run_export(
     ground_alignment_mode: str = "auto",
     vertical_translation_mode: str = "auto",
     post_ik_foot_snap_mode: str = "off",
+    ik_backend: str = "direct_opensim",
     save_graph: bool = False,
 ):
     """Export SAM3D outputs to TRC/MOT/FBX."""
@@ -78,6 +120,7 @@ def run_export(
         ground_alignment_mode=ground_alignment_mode,
         vertical_translation_mode=vertical_translation_mode,
         post_ik_foot_snap_mode=post_ik_foot_snap_mode,
+        ik_backend=ik_backend,
         save_graph=save_graph,
         show_header=True,
         header_title="SAM3D Body Export to OpenSim",
@@ -94,7 +137,7 @@ def run_export(
     print(f"Time: {elapsed:.1f}s")
     print(f"\nOutput files:")
     for name, path in results.items():
-        if name in {"ground_alignment", "post_ik_contact_meta", "elapsed"}:
+        if name in {"ground_alignment", "post_ik_contact_meta", "elapsed", "ik_backend"}:
             continue
         status = "OK" if path and Path(path).exists() else "SKIPPED"
         print(f"  [{status}] {name.upper()}: {path}")
@@ -104,6 +147,12 @@ def run_export(
 
 def main():
     args = parse_args()
+
+    if not args.input:
+        print(
+            "Error: Input not provided. Set --input or input.video_outputs_path in Config.toml."
+        )
+        sys.exit(1)
 
     json_path = Path(args.input)
     if not json_path.exists():
@@ -129,6 +178,7 @@ def main():
         ground_alignment_mode=args.ground_alignment_mode,
         vertical_translation_mode=args.vertical_translation_mode,
         post_ik_foot_snap_mode=args.post_ik_foot_snap,
+        ik_backend=args.ik_backend,
         save_graph=args.save_graph,
     )
 

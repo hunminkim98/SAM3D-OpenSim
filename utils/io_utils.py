@@ -1,13 +1,14 @@
-"""
-I/O utilities for configuration and data files.
-"""
+"""I/O utilities for configuration and data files."""
 
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
-import yaml
+
 import numpy as np
+import yaml
+
+from sam3d_opensim.config import default_marker_mapping_path, load_pipeline_config
 
 
 def load_config(config_path: str = None) -> dict:
@@ -20,18 +21,7 @@ def load_config(config_path: str = None) -> dict:
     Returns:
         Configuration dictionary
     """
-    if config_path is None:
-        # Load default config from package
-        config_path = Path(__file__).parent.parent / "config" / "config.yaml"
-
-    config_path = Path(config_path)
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    return config
+    return load_pipeline_config(config_path)
 
 
 def load_marker_mapping(mapping_path: str = None) -> dict:
@@ -45,7 +35,7 @@ def load_marker_mapping(mapping_path: str = None) -> dict:
         Marker mapping dictionary
     """
     if mapping_path is None:
-        mapping_path = Path(__file__).parent.parent / "config" / "marker_mapping.yaml"
+        mapping_path = default_marker_mapping_path()
 
     mapping_path = Path(mapping_path)
     if not mapping_path.exists():

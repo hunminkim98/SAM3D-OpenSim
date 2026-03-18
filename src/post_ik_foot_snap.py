@@ -18,6 +18,14 @@ import numpy as np
 LEFT_FOOT_MARKERS: Tuple[str, ...] = ("LHeel", "LBigToe", "LSmallToe")
 RIGHT_FOOT_MARKERS: Tuple[str, ...] = ("RHeel", "RBigToe", "RSmallToe")
 FOOT_MARKERS: Tuple[str, ...] = (*LEFT_FOOT_MARKERS, *RIGHT_FOOT_MARKERS)
+FOOT_MARKER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "LHeel": ("LHeel", "L_calc_study"),
+    "LBigToe": ("LBigToe", "L_toe_study"),
+    "LSmallToe": ("LSmallToe", "L_5meta_study"),
+    "RHeel": ("RHeel", "r_calc_study"),
+    "RBigToe": ("RBigToe", "r_toe_study"),
+    "RSmallToe": ("RSmallToe", "r_5meta_study"),
+}
 
 
 def build_post_ik_contact_meta(
@@ -198,12 +206,16 @@ def _compute_marker_heights_from_mot(
         except Exception:
             continue
 
+    resolved_marker_names = _resolve_marker_name_aliases(marker_set, marker_names)
     marker_objs: Dict[str, Any] = {}
-    for name in marker_names:
+    for logical_name, actual_name in resolved_marker_names.items():
         try:
-            marker_objs[name] = marker_set.get(name)
+            marker_objs[logical_name] = marker_set.get(actual_name)
         except Exception as exc:
-            raise ValueError(f"Marker {name} not found in model {model_path}: {exc}") from exc
+            raise ValueError(
+                f"Marker {logical_name} (resolved to {actual_name}) not found in model "
+                f"{model_path}: {exc}"
+            ) from exc
 
     heights = {
         name: np.full(data.shape[0], np.nan, dtype=np.float32)
@@ -224,6 +236,26 @@ def _compute_marker_heights_from_mot(
             heights[name][row_idx] = float(location.get(1))
 
     return heights
+
+
+def _resolve_marker_name_aliases(marker_set: Any, marker_names: Sequence[str]) -> Dict[str, str]:
+    resolved: Dict[str, str] = {}
+    for logical_name in marker_names:
+        alias_candidates = FOOT_MARKER_ALIASES.get(logical_name, (logical_name,))
+        for candidate_name in alias_candidates:
+            try:
+                marker_set.get(candidate_name)
+                resolved[logical_name] = candidate_name
+                break
+            except Exception:
+                continue
+        if logical_name not in resolved:
+            alias_text = ", ".join(alias_candidates)
+            raise ValueError(
+                f"Marker {logical_name} not found in model marker set. "
+                f"Tried aliases: {alias_text}"
+            )
+    return resolved
 
 
 def _compute_stance_drop_series(
@@ -422,6 +454,10 @@ def apply_post_ik_foot_snap(
         return report
 
     positive_mask = drop_series > 1e-5
+    support_height = np.asarray(
+        diagnostics.get("support_height", np.full(frame_count, np.nan, dtype=np.float32)),
+        dtype=np.float32,
+    )
     if not np.any(positive_mask):
         finite_support = support_height[np.isfinite(support_height)]
         report["status"] = "skipped"
@@ -440,10 +476,6 @@ def apply_post_ik_foot_snap(
     corrected[:frame_count, pelvis_ty_idx] -= drop_series.astype(np.float64)
     _write_mot(mot_path, header_lines, labels, corrected)
 
-    support_height = np.asarray(
-        diagnostics.get("support_height", np.full(frame_count, np.nan, dtype=np.float32)),
-        dtype=np.float32,
-    )
     report.update(
         {
             "status": "applied",
