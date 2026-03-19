@@ -23,6 +23,100 @@ def _step_label(index: int, total: int, offset: int) -> str:
     return f"[{index + offset}/{total}]"
 
 
+def _compute_valid_frame_window(valid_frames: np.ndarray) -> dict[str, int]:
+    signal = np.asarray(valid_frames, dtype=bool)
+    if signal.ndim != 1 or signal.size == 0 or not np.any(signal):
+        raise ValueError("No valid detections found in input; cannot export TRC/IK.")
+
+    valid_indices = np.flatnonzero(signal)
+    start = int(valid_indices[0])
+    end = int(valid_indices[-1]) + 1
+    kept = signal[start:end]
+    return {
+        "original_num_frames": int(signal.size),
+        "valid_num_frames": int(np.sum(signal)),
+        "kept_start_frame": start,
+        "kept_end_frame": end - 1,
+        "trimmed_num_frames": end - start,
+        "leading_trim": start,
+        "trailing_trim": int(signal.size - end),
+        "internal_invalid_within_span": int(np.count_nonzero(~kept)),
+        "global_translation_leading_skip": 0,
+    }
+
+
+def _apply_global_translation_leading_skip(
+    frame_window: dict[str, int],
+    *,
+    global_translation: bool,
+) -> dict[str, int]:
+    adjusted = dict(frame_window)
+    if (
+        global_translation
+        and adjusted["leading_trim"] > 0
+        and adjusted["trimmed_num_frames"] > 1
+    ):
+        adjusted["kept_start_frame"] += 1
+        adjusted["trimmed_num_frames"] -= 1
+        adjusted["leading_trim"] += 1
+        adjusted["valid_num_frames"] = max(0, adjusted["valid_num_frames"] - 1)
+        adjusted["global_translation_leading_skip"] = 1
+    return adjusted
+
+
+def _slice_framewise_mapping(
+    payload: dict[str, object],
+    *,
+    start: int,
+    end: int,
+    source_length: int,
+) -> dict[str, object]:
+    sliced: dict[str, object] = {}
+    for key, value in payload.items():
+        if isinstance(value, np.ndarray) and value.ndim >= 1 and value.shape[0] == source_length:
+            sliced[key] = value[start:end].copy()
+        elif isinstance(value, list) and len(value) == source_length:
+            sliced[key] = value[start:end]
+        else:
+            sliced[key] = value
+
+    valid_frames = sliced.get("valid_frames")
+    if isinstance(valid_frames, np.ndarray):
+        sliced["available"] = bool(np.any(valid_frames))
+    return sliced
+
+
+def _interpolate_camera_translations(
+    camera_translations: np.ndarray,
+    valid_frames: np.ndarray,
+) -> np.ndarray:
+    interpolated = np.asarray(camera_translations, dtype=np.float32).copy()
+    signal = np.asarray(valid_frames, dtype=bool)
+    if (
+        interpolated.ndim != 2
+        or interpolated.shape[1] != 3
+        or signal.ndim != 1
+        or interpolated.shape[0] != signal.shape[0]
+    ):
+        return interpolated
+    if not np.any(signal) or np.all(signal):
+        return interpolated
+
+    valid_indices = np.flatnonzero(signal)
+    invalid_indices = np.flatnonzero(~signal)
+    if valid_indices.size == 1:
+        interpolated[invalid_indices] = interpolated[valid_indices[0]]
+        return interpolated
+
+    for axis in range(interpolated.shape[1]):
+        interpolated[invalid_indices, axis] = np.interp(
+            invalid_indices,
+            valid_indices,
+            interpolated[valid_indices, axis],
+        )
+    return interpolated
+
+
 def run_export_stage(
     *,
     json_path: str,
@@ -74,6 +168,37 @@ def run_export_stage(
         data, person_idx
     )
     print(f"  Loaded {len(data)} frames, {int(np.sum(valid_frames))} valid detections")
+    frame_window = _apply_global_translation_leading_skip(
+        _compute_valid_frame_window(valid_frames),
+        global_translation=global_translation,
+    )
+    trim_start = frame_window["kept_start_frame"]
+    trim_end = frame_window["kept_end_frame"] + 1
+    if frame_window["global_translation_leading_skip"]:
+        print(
+            "  Skipped first kept frame for global-translation stability: "
+            f"new start frame {frame_window['kept_start_frame']}"
+        )
+    if frame_window["leading_trim"] or frame_window["trailing_trim"]:
+        print(
+            "  Trimmed invalid edges: kept frames "
+            f"{frame_window['kept_start_frame']}-{frame_window['kept_end_frame']} "
+            f"({frame_window['trimmed_num_frames']} frames), "
+            f"removed {frame_window['leading_trim']} leading + "
+            f"{frame_window['trailing_trim']} trailing"
+        )
+    elif frame_window["internal_invalid_within_span"]:
+        print(
+            "  Preserving "
+            f"{frame_window['internal_invalid_within_span']} internal invalid frames "
+            "for interpolation"
+        )
+
+    keypoints_3d = keypoints_3d[trim_start:trim_end].copy()
+    cam_translations = cam_translations[trim_start:trim_end].copy()
+    valid_frames = valid_frames[trim_start:trim_end].copy()
+    if frame_window["internal_invalid_within_span"]:
+        cam_translations = _interpolate_camera_translations(cam_translations, valid_frames)
 
     if fps is None:
         if meta:
@@ -103,6 +228,12 @@ def run_export_stage(
     keypoints_processed = post_processor.process(keypoints_3d, fps=fps, subject_height=subject_height)
 
     scene_ground_data = extract_scene_ground_arrays_from_json(data, person_idx=person_idx)
+    scene_ground_data = _slice_framewise_mapping(
+        scene_ground_data,
+        start=trim_start,
+        end=trim_end,
+        source_length=len(data),
+    )
     clip_scene_ground = meta.get("scene_ground", {}) if meta else {}
     if clip_scene_ground:
         scene_ground_data.update(
@@ -170,6 +301,7 @@ def run_export_stage(
         ground_alignment_info,
         fps=fps,
     )
+    post_ik_contact_meta["frame_window"] = frame_window
     post_ik_contact_meta_path = output_dir / "post_ik_contact_meta.json"
     save_json(post_ik_contact_meta, post_ik_contact_meta_path)
     print(f"  Saved post-IK contact meta: {post_ik_contact_meta_path}")
@@ -196,6 +328,7 @@ def run_export_stage(
         "fbx": None,
         "ik_backend": ik_backend,
         "ground_alignment": ground_alignment_info,
+        "frame_window": frame_window,
         "post_ik_contact_meta": str(post_ik_contact_meta_path),
         "pose2sim_workspace": None,
         "pose2sim_augmented_trc": None,

@@ -34,7 +34,17 @@ class ExportStageSaveGraphTests(unittest.TestCase):
         load_meta_mock,
         load_outputs_mock,
     ):
-        load_outputs_mock.return_value = [{"frame": "frame_000000.jpg", "outputs": [{}]}]
+        load_outputs_mock.return_value = [
+            {
+                "frame": "frame_000000.jpg",
+                "outputs": [
+                    {
+                        "pred_keypoints_3d": np.zeros((70, 3), dtype=np.float32).tolist(),
+                        "pred_cam_t": [0.0, 0.0, 5.0],
+                    }
+                ],
+            }
+        ]
         load_meta_mock.return_value = {"fps": 30.0}
         process_mock.return_value = np.zeros((1, 70, 3), dtype=np.float32)
         transform_mock.return_value = np.zeros((1, 70, 3), dtype=np.float32)

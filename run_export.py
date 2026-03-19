@@ -137,7 +137,13 @@ def run_export(
     print(f"Time: {elapsed:.1f}s")
     print(f"\nOutput files:")
     for name, path in results.items():
-        if name in {"ground_alignment", "post_ik_contact_meta", "elapsed", "ik_backend"}:
+        if name in {
+            "ground_alignment",
+            "frame_window",
+            "post_ik_contact_meta",
+            "elapsed",
+            "ik_backend",
+        }:
             continue
         status = "OK" if path and Path(path).exists() else "SKIPPED"
         print(f"  [{status}] {name.upper()}: {path}")

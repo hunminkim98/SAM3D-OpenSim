@@ -212,6 +212,7 @@ def build_processing_report(
             "single_person": bool(single_person),
             "visualize_requested": bool(visualize_requested),
             "ik_backend": ik_backend,
+            "frame_window": export_results.get("frame_window", {}),
             "ground_alignment": export_results.get("ground_alignment", {}),
             "post_ik_foot_snap_mode": post_ik_foot_snap_mode,
         },
